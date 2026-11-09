@@ -16,18 +16,18 @@
 
 ```mermaid
 flowchart TD
-    Jira["Jira Requerimiento (ADF)"] --> FS["feature-start <TICKET>"]
+    Jira["Jira Requerimiento - ADF"] --> FS["feature-start TICKET"]
     Figma["Figma Diseños / Tokens"] --> FS
     Confluence["Confluence Docs"] --> FS
 
     subgraph Resiliencia_MultiAgente ["Cadena de Resiliencia de Inferencia"]
         FS --> Fallback{"Motor de Inferencia"}
-        Fallback -->|1. Prioridad| Gemini["Google Gemini API (2.5-flash / Pro)"]
-        Fallback -->|2. Fallback Cuota (429)| Copilot["GitHub Copilot CLI"]
-        Fallback -->|3. Fallback Offline| KiroBoot["Kiro Self-Bootstrap (Context Ingestion)"]
+        Fallback -->|"1. Prioridad"| Gemini["Google Gemini API - 2.5 Flash / Pro"]
+        Fallback -->|"2. Fallback Cuota 429"| Copilot["GitHub Copilot CLI"]
+        Fallback -->|"3. Fallback Offline"| KiroBoot["Kiro Self-Bootstrap - Context Ingestion"]
     end
 
-    Gemini --> LeanSpec["Lean BDD Spec (.kiro/specs/<TICKET>-spec.md)"]
+    Gemini --> LeanSpec["Lean BDD Spec: .kiro/specs/TICKET-spec.md"]
     Copilot --> LeanSpec
     KiroBoot --> LeanSpec
 
