@@ -1,0 +1,733 @@
+#!/usr/bin/env node
+'use strict';
+
+const fs = require('node:fs');
+const path = require('node:path');
+const os = require('node:os');
+const { spawnSync } = require('node:child_process');
+const readline = require('node:readline/promises');
+const { stdin: input, stdout: output } = require('node:process');
+
+// ============================================================================
+// GESTOR DE CONFIGURACIÓN & ONBOARDING INTERACTIVO
+// ============================================================================
+const CONFIG_DIR = path.join(os.homedir(), '.config', 'aidlc');
+const CONFIG_FILE = path.join(CONFIG_DIR, 'config.env');
+
+function loadPersistentEnv() {
+  if (fs.existsSync(CONFIG_FILE)) {
+    try {
+      const content = fs.readFileSync(CONFIG_FILE, 'utf8');
+      content.split('\n').forEach(line => {
+        const trimmed = line.trim();
+        if (trimmed && !trimmed.startsWith('#') && trimmed.includes('=')) {
+          const idx = trimmed.indexOf('=');
+          const key = trimmed.slice(0, idx).trim();
+          let val = trimmed.slice(idx + 1).trim();
+          if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+            val = val.slice(1, -1);
+          }
+          if (!process.env[key]) {
+            process.env[key] = val;
+          }
+        }
+      });
+    } catch {}
+  }
+}
+
+// Cargar variables persistentes guardadas anteriormente
+loadPersistentEnv();
+
+async function runInteractiveOnboarding() {
+  const missing = [];
+  if (!process.env.JIRA_USERNAME) missing.push('JIRA_USERNAME');
+  if (!process.env.JIRA_API_TOKEN) missing.push('JIRA_API_TOKEN');
+  if (!process.env.GEMINI_API_KEY) missing.push('GEMINI_API_KEY');
+
+  if (missing.length === 0) return;
+
+  console.log("\n=================================================================================");
+  console.log("👋 ¡BIENVENIDO AL ENTORNO AI-DLC & SPEC-DRIVEN DEVELOPMENT (SDD)!");
+  console.log("=================================================================================");
+  console.log("Hemos detectado que es la primera vez que ejecutas 'feature-start' en este equipo.");
+  console.log("Vamos a configurar tus accesos una sola vez para que todo funcione sin fricción.\n");
+
+  const rl = readline.createInterface({ input, output });
+
+  try {
+    // 1. Directorio base de proyectos
+    if (!process.env.PROJECTS_BASE_DIR) {
+      const defaultProjects = path.join(os.homedir(), 'Documents', 'GitHub');
+      console.log("📁 1. Directorio local donde clonas tus repositorios Git:");
+      console.log(`   (Donde tienes tus carpetas de proyectos; sugerido: ${defaultProjects})`);
+      const dirAnswer = await rl.question(`👉 Ingresa la ruta de tus repositorios [Enter = ${defaultProjects}]: `);
+      let chosenPath = dirAnswer.trim() || defaultProjects;
+      if (chosenPath.startsWith('~/')) {
+        chosenPath = path.join(os.homedir(), chosenPath.slice(2));
+      }
+      process.env.PROJECTS_BASE_DIR = path.resolve(chosenPath);
+      console.log(`   ✔ Repositorios configurados en: ${process.env.PROJECTS_BASE_DIR}\n`);
+    }
+
+    // 2. Jira Base URL
+    if (!process.env.JIRA_URL) {
+      console.log("🌐 2. URL de tu instancia Jira (Atlassian):");
+      console.log("   (Ejemplo: https://tu-organizacion.atlassian.net)");
+      while (!process.env.JIRA_URL) {
+        const jAns = await rl.question("👉 URL de Jira: ");
+        if (jAns.trim()) process.env.JIRA_URL = jAns.trim().replace(/\/+$/, '');
+      }
+      console.log(`   ✔ Jira URL: ${process.env.JIRA_URL}\n`);
+    }
+
+    if (!process.env.CONFLUENCE_URL && process.env.JIRA_URL) {
+      process.env.CONFLUENCE_URL = `${process.env.JIRA_URL}/wiki`;
+    }
+
+    // 3. Jira Username
+    if (!process.env.JIRA_USERNAME) {
+      console.log("📧 3. Correo de tu cuenta Atlassian (Jira / Confluence):");
+      console.log("   (Ejemplo: tu-nombre@empresa.com)");
+      while (!process.env.JIRA_USERNAME) {
+        const uAns = await rl.question("👉 Correo corporativo: ");
+        if (uAns.trim()) process.env.JIRA_USERNAME = uAns.trim();
+      }
+      console.log(`   ✔ Usuario: ${process.env.JIRA_USERNAME}\n`);
+    }
+
+    // 4. Jira API Token
+    if (!process.env.JIRA_API_TOKEN) {
+      console.log("🔑 4. API Token de Atlassian:");
+      console.log("   Puedes crearlo en: https://id.atlassian.com/manage-profile/security/api-tokens");
+      console.log("   (Crea un token con nombre 'aidlc-cli' y cópialo aquí)");
+      while (!process.env.JIRA_API_TOKEN) {
+        const tokAns = await rl.question("👉 Token de Jira: ");
+        if (tokAns.trim()) process.env.JIRA_API_TOKEN = tokAns.trim();
+      }
+      console.log("   ✔ Token de Jira registrado.\n");
+    }
+
+    // 5. Gemini API Key
+    if (!process.env.GEMINI_API_KEY) {
+      console.log("🤖 5. Google Gemini API Key (para la síntesis del plan SDD):");
+      console.log("   Puedes obtener tu API Key en: https://aistudio.google.com/app/apikey");
+      while (!process.env.GEMINI_API_KEY) {
+        const gAns = await rl.question("👉 Gemini API Key: ");
+        if (gAns.trim()) process.env.GEMINI_API_KEY = gAns.trim();
+      }
+      console.log("   ✔ API Key de Gemini registrada.\n");
+    }
+
+    // 6. Figma Access Token (Opcional)
+    if (!process.env.FIGMA_ACCESS_TOKEN) {
+      console.log("🎨 6. Figma Personal Access Token (Opcional):");
+      console.log("   Si el ticket tiene mockups en Figma, descargará componentes automáticamente.");
+      console.log("   Generable en: Figma -> Configuración de cuenta -> Personal access tokens");
+      const fAns = await rl.question("👉 Token de Figma (o presiona Enter para omitir): ");
+      if (fAns.trim()) {
+        process.env.FIGMA_ACCESS_TOKEN = fAns.trim();
+        console.log("   ✔ Token de Figma registrado.\n");
+      } else {
+        console.log("   ℹ️  Figma omitido temporalmente.\n");
+      }
+    }
+
+    // Guardar archivo persistente con permisos 0600
+    fs.mkdirSync(CONFIG_DIR, { recursive: true });
+    const envLines = [
+      `# Configuración automática AI-DLC & feature-start`,
+      `# Creado el ${new Date().toISOString()}`,
+      `PROJECTS_BASE_DIR="${process.env.PROJECTS_BASE_DIR}"`,
+      `JIRA_URL="${process.env.JIRA_URL}"`,
+      `CONFLUENCE_URL="${process.env.CONFLUENCE_URL}"`,
+      `JIRA_USERNAME="${process.env.JIRA_USERNAME}"`,
+      `JIRA_API_TOKEN="${process.env.JIRA_API_TOKEN}"`,
+      `GEMINI_API_KEY="${process.env.GEMINI_API_KEY}"`,
+      process.env.FIGMA_ACCESS_TOKEN ? `FIGMA_ACCESS_TOKEN="${process.env.FIGMA_ACCESS_TOKEN}"` : '',
+    ].filter(Boolean).join('\n') + '\n';
+
+    fs.writeFileSync(CONFIG_FILE, envLines, { mode: 0o600 });
+    console.log("=================================================================================");
+    console.log(`✅ ¡Configuración guardada exitosamente en ${CONFIG_FILE}!`);
+    console.log("No volverá a pedírtela. Si en el futuro necesitas actualizarla, puedes editar ese archivo.");
+    console.log("=================================================================================\n");
+  } finally {
+    rl.close();
+  }
+}
+
+// ============================================================================
+// CONFIGURACIÓN DINÁMICA
+// ============================================================================
+const CONFIG = {
+  get projectsBaseDir() {
+    return process.env.PROJECTS_BASE_DIR || path.join(os.homedir(), 'Documents', 'GitHub');
+  },
+  quotaRegex: /exceeded your monthly quota|rate limit|AI Credits 0|429|unauthorized|error:/i,
+  bufferLimit: 50 * 1024 * 1024,
+};
+
+const rawArgs = process.argv.slice(2);
+const forceRefresh = rawArgs.includes('--refresh');
+const args = rawArgs.filter(a => a !== '--refresh');
+
+// ============================================================================
+// ADAPTADORES CLI SEGUROS
+// ============================================================================
+function runCli(cmd, cmdArgs = [], options = {}) {
+  return spawnSync(cmd, cmdArgs, {
+    encoding: 'utf8',
+    maxBuffer: CONFIG.bufferLimit,
+    env: { ...process.env, ...(options.env || {}) },
+    ...options
+  });
+}
+
+async function askQuestion(query) {
+  const rl = readline.createInterface({ input, output });
+  try {
+    const answer = await rl.question(query);
+    return answer.trim();
+  } finally {
+    rl.close();
+  }
+}
+
+function isValidAiOutput(res) {
+  if (!res || res.status !== 0) return false;
+  const stdout = (res.stdout || '').trim();
+  const stderr = (res.stderr || '').trim();
+  if (!stdout || stdout.length < 20) return false;
+  if (CONFIG.quotaRegex.test(stdout) || CONFIG.quotaRegex.test(stderr)) return false;
+  return true;
+}
+
+// ============================================================================
+// GESTIÓN DE GIT
+// ============================================================================
+function setupFeatureBranch(repoPath, branchName) {
+  const repoName = path.basename(repoPath);
+
+  const isDirty = runCli('git', ['-C', repoPath, 'status', '--porcelain']).stdout.trim().length > 0;
+  if (isDirty) {
+    console.warn(`  ⚠️  [${repoName}] Repositorio con cambios locales no guardados. No se alteró la rama por seguridad.`);
+    return;
+  }
+
+  let baseBranch = 'main';
+  if (runCli('git', ['-C', repoPath, 'show-ref', '--verify', '--quiet', 'refs/heads/master']).status === 0) {
+    baseBranch = 'master';
+  }
+
+  runCli('git', ['-C', repoPath, 'checkout', baseBranch], { stdio: 'ignore' });
+  runCli('git', ['-C', repoPath, 'pull', 'origin', baseBranch, '--ff-only'], { stdio: 'ignore' });
+
+  const branchExists = runCli('git', ['-C', repoPath, 'show-ref', '--verify', '--quiet', `refs/heads/${branchName}`]).status === 0;
+  if (branchExists) {
+    runCli('git', ['-C', repoPath, 'checkout', branchName], { stdio: 'ignore' });
+    console.log(`  🌿 [${repoName}] Rama activada: ${branchName}`);
+  } else {
+    runCli('git', ['-C', repoPath, 'checkout', '-b', branchName, baseBranch], { stdio: 'ignore' });
+    console.log(`  🌿 [${repoName}] Nueva rama creada: ${branchName} (desde ${baseBranch})`);
+  }
+}
+
+// ============================================================================
+// MEMORIA DE ARQUITECTURA EFICIENTE
+// ============================================================================
+function getRepoArchitectureContext(repoPath, force) {
+  const repoName = path.basename(repoPath);
+  const cacheDir = path.join(repoPath, '.kiro', 'cache');
+  const cacheFile = path.join(cacheDir, 'repo-memory.json');
+
+  let currentCommit = '';
+  const revRes = runCli('git', ['-C', repoPath, 'rev-parse', 'HEAD']);
+  if (revRes.status === 0) currentCommit = revRes.stdout.trim();
+
+  let needRebuild = force;
+  let cachedData = null;
+
+  if (!needRebuild && fs.existsSync(cacheFile)) {
+    try {
+      cachedData = JSON.parse(fs.readFileSync(cacheFile, 'utf8'));
+      if (!cachedData.summary || cachedData.commit !== currentCommit || CONFIG.quotaRegex.test(cachedData.summary)) {
+        needRebuild = true;
+      } else {
+        console.log(`  ⚡ [${repoName}] Memoria arquitectónica en caché al día.`);
+      }
+    } catch {
+      needRebuild = true;
+    }
+  } else {
+    needRebuild = true;
+  }
+
+  let summary = cachedData && !CONFIG.quotaRegex.test(cachedData.summary || '') ? cachedData.summary : '';
+
+  let pkgSummary = '';
+  const pkgPath = path.join(repoPath, 'package.json');
+  if (fs.existsSync(pkgPath)) {
+    try {
+      const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+      pkgSummary = JSON.stringify({
+        name: pkg.name,
+        dependencies: Object.keys(pkg.dependencies || {}),
+        devDependencies: Object.keys(pkg.devDependencies || {})
+      }, null, 2);
+    } catch {}
+  }
+
+  let repoTree = '';
+  const filesRes = runCli('git', ['-C', repoPath, 'ls-files']);
+  if (filesRes.status === 0) {
+    repoTree = filesRes.stdout
+      .trim()
+      .split('\n')
+      .filter(f => f && !f.startsWith('node_modules/') && !f.startsWith('.kiro/') && !/\.(png|jpg|ico|svg|pdf|lock)$/i.test(f))
+      .slice(0, 200)
+      .join('\n');
+  }
+
+  if (needRebuild) {
+    console.log(`  🤖 [${repoName}] Extrayendo arquitectura base...`);
+    const prompt = `Analiza este repositorio (${repoName}). En máximo 10 líneas, indica el framework, carpetas principales de código y patrones de arquitectura empleados. Sé breve y directo.`;
+    const payload = `DEPENDENCIAS:\n${pkgSummary}\n\nESTRUCTURA DE ARCHIVOS:\n${repoTree}`;
+
+    // Cadena de resolución de arquitectura: Gemini -> Copilot -> Fallback estructurado
+    let aiRes = runCli('ask-gemini', [prompt], { input: payload, cwd: repoPath });
+    if (!isValidAiOutput(aiRes)) {
+      aiRes = runCli('copilot', ['-p', `${prompt}\n\n${payload}`], { cwd: repoPath, timeout: 30000 });
+    }
+
+    if (isValidAiOutput(aiRes)) {
+      summary = aiRes.stdout.trim();
+      fs.mkdirSync(cacheDir, { recursive: true });
+      fs.writeFileSync(cacheFile, JSON.stringify({ repo: repoName, commit: currentCommit, summary }, null, 2), 'utf8');
+    } else {
+      // Fallback local sin IA para no bloquear
+      summary = `Stack detectado en package.json: ${pkgSummary.slice(0, 300)}`;
+    }
+  }
+
+  return `
+<REPOSITORY name="${repoName}">
+  <ARCHITECTURE_SUMMARY>
+${summary || 'Estructura modular estándar.'}
+  </ARCHITECTURE_SUMMARY>
+  <KEY_FILES>
+${repoTree}
+  </KEY_FILES>
+</REPOSITORY>`;
+}
+
+function normalizeKiroTasksIndentation(markdown) {
+  const lines = markdown.split('\n');
+  let inTasksSection = false;
+  let insideUoW = false;
+
+  return lines.map(line => {
+    if (/^##\s+3\.\s+Tasks/i.test(line)) {
+      inTasksSection = true;
+      insideUoW = false;
+      return line;
+    }
+    if (inTasksSection && /^##\s+[^3]/.test(line)) {
+      inTasksSection = false;
+      insideUoW = false;
+      return line;
+    }
+    if (!inTasksSection) return line;
+    if (/^###\s+/.test(line)) {
+      insideUoW = false;
+      return line;
+    }
+    if (/^-\s*\[\s*[xX ]?\s*\]\s*\*\*UoW\b/i.test(line.trim())) {
+      insideUoW = true;
+      return line.trim();
+    }
+    if (insideUoW && /^-\s*\[\s*[xX ]?\s*\]\s+/.test(line)) {
+      return '  ' + line.trim();
+    }
+    return line;
+  }).join('\n');
+}
+
+// ============================================================================
+// INTERFAZ DE USUARIO (SELECCIÓN DE TICKET)
+// ============================================================================
+async function selectTicketInteractively() {
+  console.log("==> 📋 Consultando tickets activos en Jira...");
+  const res = runCli('jira-cli', ['my-issues', '--json']);
+  if (res.status !== 0) {
+    console.error("❌ No se pudo conectar a Jira con jira-cli. Verifica tus credenciales.");
+    process.exit(1);
+  }
+
+  let issues = [];
+  try {
+    issues = JSON.parse(res.stdout);
+  } catch {
+    console.error("❌ Respuesta inválida de Jira (no es JSON válido).");
+    process.exit(1);
+  }
+
+  if (!issues || issues.length === 0) {
+    console.log("🎉 No tienes historias pendientes asignadas en Jira.");
+    const manual = await askQuestion("Ingresa manualmente la clave del ticket (o presiona Enter para salir): ");
+    if (!manual) process.exit(0);
+    return manual.toUpperCase();
+  }
+
+  console.log("\n==========================================================================================================");
+  console.log(`🎯 SELECCIONA LA HISTORIA PARA INICIAR EL FLUJO AI-DLC & SDD:`);
+  console.log("==========================================================================================================");
+  console.log(`${"#".padEnd(3)} | ${"CLAVE".padEnd(12)} | ${"ESTADO".padEnd(18)} | ${"COMPONENTE".padEnd(20)} | RESUMEN`);
+  console.log("----------------------------------------------------------------------------------------------------------");
+
+  issues.forEach((it, idx) => {
+    const num = String(idx + 1).padEnd(3);
+    const key = (it.key || '').padEnd(12);
+    const status = (it.status || '').slice(0, 18).padEnd(18);
+    const comp = ((it.components && it.components.join(',')) || '-').slice(0, 20).padEnd(20);
+    const stInfo = it.subtasksCount > 0 ? ` (${it.subtasksCount} subtareas)` : '';
+    console.log(`${num} | ${key} | ${status} | ${comp} | ${it.summary || ''}${stInfo}`);
+  });
+  console.log("==========================================================================================================\n");
+
+  const answer = await askQuestion(`👉 Elige un número [1-${issues.length}] o escribe una clave (Enter = 1, 'q' = salir): `);
+  if (/^(q|salir|exit)$/i.test(answer)) {
+    console.log("👋 Operación cancelada.");
+    process.exit(0);
+  }
+  if (!answer) return issues[0].key;
+  if (/^\d+$/.test(answer)) {
+    const idx = parseInt(answer, 10) - 1;
+    if (idx >= 0 && idx < issues.length) return issues[idx].key;
+    console.error(`❌ Número fuera de rango (1-${issues.length}).`);
+    process.exit(1);
+  }
+  return answer.toUpperCase();
+}
+
+// ============================================================================
+// FLUJO PRINCIPAL
+// ============================================================================
+async function main() {
+  // 0. Comprobación y Onboarding didáctico (primera ejecución)
+  await runInteractiveOnboarding();
+
+  let ticket = args[0];
+  if (!ticket || ticket.startsWith('-')) {
+    ticket = await selectTicketInteractively();
+  } else {
+    ticket = ticket.toUpperCase();
+  }
+
+  if (!/^[A-Z][A-Z0-9]+-\d+$/.test(ticket)) {
+    console.error(`❌ Formato de ticket inválido: '${ticket}'. Ejemplo esperado: PROJ-1234`);
+    process.exit(1);
+  }
+
+  const ASSETS_DIR = path.join(os.tmpdir(), `${ticket}-assets`);
+  fs.mkdirSync(ASSETS_DIR, { recursive: true });
+
+  console.log(`\n==> 🔍 [AI-DLC Phase 1] Consultando ${ticket} en Jira...`);
+  const jiraRes = runCli('jira-cli', [ticket]);
+  if (jiraRes.status !== 0) {
+    console.error(`❌ Error consultando Jira: ${jiraRes.stderr || jiraRes.stdout}`);
+    process.exit(1);
+  }
+
+  const jiraOutput = jiraRes.stdout;
+
+  const titleMatch = jiraOutput.match(/^JIRA TICKET:\s*[A-Z0-9]+-[0-9]+\s*-\s*(.+)$/im);
+  const taskTitle = titleMatch ? titleMatch[1].trim() : `Tarea ${ticket}`;
+
+  const compMatch = jiraOutput.match(/^COMPONENTS:\s*(.+)$/m);
+  const components = compMatch && compMatch[1].trim() ? compMatch[1].split(',').map(c => c.trim()).filter(Boolean) : [];
+
+  const figmaMatch = jiraOutput.match(/^FIGMA_URLS:\s*(.+)$/m);
+  const figmaUrls = figmaMatch && figmaMatch[1].trim() ? figmaMatch[1].split(/\s+/).filter(u => /^https?:\/\/.*figma\.com/i.test(u)) : [];
+
+  if (components.length > 0) {
+    console.log(`==> 🧩 Componentes detectados en Jira: ${components.join(', ')}`);
+  }
+
+  const slug = taskTitle.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 35);
+  const branchName = slug ? `feature/${ticket}-${slug}` : `feature/${ticket}`;
+
+  // Localizar repositorios locales con normalización inteligente
+  const targetRepos = [];
+  if (components.length > 0) {
+    let availableDirs = [];
+    try {
+      availableDirs = fs.readdirSync(CONFIG.projectsBaseDir);
+    } catch {}
+
+    for (const comp of components) {
+      let repoPath = path.join(CONFIG.projectsBaseDir, comp);
+      if (!fs.existsSync(repoPath) || !fs.existsSync(path.join(repoPath, '.git'))) {
+        const compSlug = comp.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+        const matchedDir = availableDirs.find(d => {
+          const dirSlug = d.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+          return dirSlug === compSlug || dirSlug.includes(compSlug);
+        });
+        if (matchedDir) {
+          repoPath = path.join(CONFIG.projectsBaseDir, matchedDir);
+        }
+      }
+
+      if (fs.existsSync(repoPath) && fs.existsSync(path.join(repoPath, '.git'))) {
+        console.log(`  ✔ Repositorio encontrado: ${repoPath}`);
+        targetRepos.push(repoPath);
+      } else {
+        console.log(`  ⚠️ No se encontró el proyecto '${comp}' en ${CONFIG.projectsBaseDir}`);
+      }
+    }
+  }
+
+  if (targetRepos.length === 0) {
+    const gitRoot = runCli('git', ['rev-parse', '--show-toplevel']);
+    if (gitRoot.status === 0 && gitRoot.stdout.trim()) {
+      const currentRepo = gitRoot.stdout.trim();
+      console.log(`==> 📂 Usando el repositorio Git actual: ${currentRepo}`);
+      targetRepos.push(currentRepo);
+    }
+  }
+
+  if (targetRepos.length === 0) {
+    console.error(`❌ No se encontró ningún repositorio local en ${CONFIG.projectsBaseDir} ni en el directorio actual.`);
+    process.exit(1);
+  }
+
+  // Preparar ramas y extraer arquitectura
+  console.log("\n==> 🧠 [AI-DLC Phase 1] Preparando ramas y memoria técnica...");
+  let reposContext = '';
+  for (const repo of targetRepos) {
+    setupFeatureBranch(repo, branchName);
+    reposContext += getRepoArchitectureContext(repo, forceRefresh);
+  }
+
+  // Descargar recursos de Figma si existen
+  let figmaContext = '';
+  for (const fUrl of figmaUrls) {
+    console.log(`==> 🎨 [AI-DLC Design Ingestion] Descargando diseño desde Figma: ${fUrl}`);
+    const figmaRes = runCli('figma-cli', [fUrl, ASSETS_DIR]);
+    if (figmaRes.status === 0 && figmaRes.stdout.trim()) {
+      figmaContext += `\n<FIGMA_FILE url="${fUrl}">\n${figmaRes.stdout.slice(0, 3000)}\n</FIGMA_FILE>`;
+    }
+  }
+
+  // Mover ticket a "En desarrollo" en Jira
+  console.log("==> 🚀 Evaluando estado en Jira...");
+  runCli('jira-cli', ['start', ticket], { stdio: 'inherit' });
+
+  // ==========================================================================
+  // CONSTRUCCIÓN DEL PROMPT MAESTRO (COBERTURA TOTAL + ANÁLISIS DE BRECHA)
+  // ==========================================================================
+  console.log("==> 🤖 [AI-DLC Phase 2] Construyendo Plan Maestro (Fidelidad Jira + Análisis de Brecha)...");
+  const reposListStr = targetRepos.map(r => path.basename(r)).join(', ');
+
+  const systemPrompt = `Eres un Staff Software Architect experto en AI-DLC, Spec-Driven Development (SDD) y BDD.
+Tu misión es generar el artefacto maestro de especificación y ejecución (.md) para el ticket ${ticket}: "${taskTitle}".
+
+================================================================================
+REGLAS INVIOLABLES DE ARQUITECTURA Y NEGOCIO:
+================================================================================
+1. FIDELIDAD ESTRICTA AL DOMINIO DEL TICKET (ZERO-HALLUCINATION):
+   - Basa las reglas, entidades y terminología estrictamente en los 'ACCEPTANCE CRITERIA' y la 'DESCRIPTION' de Jira.
+   - Prohibido asumir tecnologías, bases de datos o frameworks que no correspondan al stack real de los repositorios y Jira.
+
+2. COBERTURA TOTAL DE SUBTAREAS DE JIRA (BASE OBLIGATORIA):
+   - Cada una de las 'TECHNICAL SUBTASKS' de Jira DEBE convertirse en una Unidad de Trabajo (UoW) en '## 3. Tasks'.
+   - Conserva textualmente la clave y el título de cada subtarea técnica de Jira (ej: [CLAVE] Título de la tarea).
+   - Detalla para cada una: el archivo exacto en [${reposListStr}], las entidades/tablas involucradas y la lógica específica a implementar.
+
+3. ANÁLISIS DE BRECHA (GAP ANALYSIS):
+   - Compara minuciosamente los 'ACCEPTANCE CRITERIA' y la 'DESCRIPTION' contra las subtareas técnicas.
+   - Si detectas que algún requerimiento o criterio NO tiene una subtarea que lo cubra (o si el desarrollador no creó subtareas en Jira), AGREGA las Unidades de Trabajo necesarias marcadas con: "[Sugerido por Arquitectura]".
+
+4. CONCISIÓN EN SECCIONES 1 Y 2 PARA EVITAR TEXTO CORTADO:
+   - En '1.1 Problem Statement', sé conciso (3-4 líneas).
+   - En '1.2 Acceptance Criteria (BDD)', usa un Scenario Outline con tabla de Examples resumiendo los criterios de Jira.
+   - En '2.1 File Mapping', lista de archivos por repositorio.
+   - En '2.2 Business Rules & Acceptance Matrix', tabla Markdown cruzando criterios con la regla/rama esperada.
+   - En '2.3 Contracts', interfaces TypeScript esenciales (DTOs / queries).
+   - En '2.4 Quality Guardrails', métricas de calidad (cobertura >= 85%, 0 'any', complejidad <= 10).
+   - Dedica el mayor detalle y profundidad técnica a '## 3. Tasks'.
+
+================================================================================
+FORMATO OBLIGATORIO DE SALIDA:
+================================================================================
+# SDD & AI-DLC Spec: ${ticket} - ${taskTitle}
+
+## 1. Requirements
+- **1.1 Problem Statement**: Resumen de alcance.
+- **1.2 Acceptance Criteria (BDD)**: Scenario Outline Gherkin conciso con tabla de Examples.
+
+## 2. Technical Design
+- **2.1 File Mapping**: Archivos específicos a modificar o crear en [${reposListStr}].
+- **2.2 Business Rules & Acceptance Matrix**: Tabla de correspondencia Criterio -> Regla/Valor esperado.
+- **2.3 Contracts**: Interfaces TypeScript clave.
+- **2.4 Quality Guardrails**: Reglas de calidad y cobertura.
+
+## 3. Tasks
+(Genera las UoW obligatorias de Jira y las UoW [Sugerido por Arquitectura] si faltan pasos para cubrir la historia):
+- [ ] **UoW 1: [CLAVE-JIRA] Título descriptivo**
+  - [ ] En \`repositorio/ruta/archivo.ts\`, detalle técnico preciso del cambio.
+  - [ ] Self-Check: Validación de compilación y pruebas unitarias con cobertura >= 85%.`;
+
+  const fullContextPayload = `
+<JIRA_CONTEXT>
+${jiraOutput}
+</JIRA_CONTEXT>
+
+<REPOSITORIES_CONTEXT>
+${reposContext}
+</REPOSITORIES_CONTEXT>
+${figmaContext ? `\n<FIGMA_DESIGN>\n${figmaContext}\n</FIGMA_DESIGN>` : ''}`;
+
+  let specContent = '';
+  try {
+    // 1. Intento primario: Gemini CLI
+    let aiRes = runCli('ask-gemini', [systemPrompt], {
+      input: fullContextPayload,
+      stdio: ['pipe', 'pipe', 'inherit']
+    });
+
+    // 2. Intento secundario: GitHub Copilot CLI (si ask-gemini falló o agotó cuota)
+    if (!isValidAiOutput(aiRes)) {
+      console.log("  ⚠️  Gemini no disponible. Activando respaldo secundario con GitHub Copilot CLI...");
+      aiRes = runCli('copilot', ['-p', `${systemPrompt}\n\n${fullContextPayload}`], { timeout: 60000 });
+    }
+
+    if (isValidAiOutput(aiRes)) {
+      specContent = normalizeKiroTasksIndentation(aiRes.stdout.trim());
+    } else {
+      throw new Error("Proveedores externos (Gemini y Copilot) no respondieron o no tienen cuota disponible.");
+    }
+  } catch (err) {
+    // 3. SALVAVIDAS UNIVERSAL: Kiro Self-Bootstrap
+    console.log(`\n⚠️  [AI Fallback Activo] ${err.message}`);
+    console.log("🛡️  Activando modo 'Kiro Self-Bootstrap': Ensamblando artefacto SDD base directamente desde Jira...");
+
+    // Extraer subtareas técnicas directamente de Jira
+    const subtaskRegex = /###\s+\[Sub-task\]\s+([A-Z0-9]+-[0-9]+):\s+([^\n(]+)/gi;
+    const subtasks = [];
+    let m;
+    while ((m = subtaskRegex.exec(jiraOutput)) !== null) {
+      subtasks.push({ key: m[1].trim(), title: m[2].trim() });
+    }
+
+    let tasksMarkdown = '';
+    if (subtasks.length > 0) {
+      tasksMarkdown = subtasks.map((st, i) => 
+`- [ ] **UoW ${i + 1}: [${st.key}] ${st.title}**
+  - [ ] Implementar los cambios correspondientes en los repositorios: [${reposListStr}].
+  - [ ] Self-Check: Validación de compilación y pruebas unitarias con cobertura >= 85%.`
+      ).join('\n\n');
+    } else {
+      tasksMarkdown = `- [ ] **UoW 1: [${ticket}] Implementación del requerimiento principal**
+  - [ ] Implementar la solución técnica según los Criterios de Aceptación de Jira.
+  - [ ] Self-Check: Pruebas unitarias con cobertura >= 85%.`;
+    }
+
+    specContent = `# SDD & AI-DLC Spec: ${ticket} - ${taskTitle}
+
+## 1. Requirements
+- **1.1 Problem Statement**:
+  ${taskTitle}
+
+- **1.2 Acceptance Criteria & Contexto de Jira**:
+\`\`\`text
+${jiraOutput.slice(0, 5000)}
+\`\`\`
+
+## 2. Technical Design
+- **2.1 File Mapping**: Repositorios asignados [${reposListStr}].
+- **2.2 Quality Guardrails**: Cobertura unitaria >= 85%, tipado estricto (0 'any'), complejidad <= 10.
+
+## 3. Tasks
+(Esqueleto generado automáticamente desde las subtareas de Jira. Kiro Agent enriquecerá y validará la brecha durante el inicio):
+
+${tasksMarkdown}
+`;
+  }
+
+  // ==========================================================================
+  // DISTRIBUCIÓN DE ARTEFACTOS EN LOS REPOSITORIOS
+  // ==========================================================================
+  let mainSpecPath = '';
+  const mainRepoDir = targetRepos[0];
+
+  for (const repo of targetRepos) {
+    const specsDir = path.join(repo, '.kiro', 'specs');
+    const steeringDir = path.join(repo, '.kiro', 'steering');
+    const assetsDest = path.join(specsDir, 'assets');
+
+    fs.mkdirSync(specsDir, { recursive: true });
+    fs.mkdirSync(steeringDir, { recursive: true });
+    fs.mkdirSync(assetsDest, { recursive: true });
+
+    const specPath = path.join(specsDir, `${ticket}-spec.md`);
+    fs.writeFileSync(specPath, specContent, 'utf8');
+    if (!mainSpecPath) mainSpecPath = specPath;
+
+    if (fs.existsSync(ASSETS_DIR)) {
+      const assetFiles = fs.readdirSync(ASSETS_DIR);
+      for (const af of assetFiles) {
+        fs.copyFileSync(path.join(ASSETS_DIR, af), path.join(assetsDest, af));
+      }
+    }
+
+    const steeringContent = `# Protocolo de Ejecución AI-DLC & SDD: ${ticket} - ${taskTitle}
+- Repositorio objetivo: \`${path.basename(repo)}\`
+- Rama activa: \`${branchName}\`
+- Artefacto Maestro: \`.kiro/specs/${ticket}-spec.md\`
+
+## Ciclo de Ejecución del Agente (AI-DLC Loop):
+Para cada Unidad de Trabajo (UoW) en \`## 3. Tasks\` (tanto las de Jira como las [Sugerido por Arquitectura]):
+1. **Context Analysis:** Inspecciona únicamente los archivos involucrados en la UoW actual.
+2. **Implement:** Aplica los cambios requeridos respetando principios SOLID y tipado estricto (0 \`any\`).
+3. **Verify:** Ejecuta la suite de pruebas unitarias asegurando cobertura >= 85%.
+4. **Advance:** Marca el checkbox \`[x]\` en \`.kiro/specs/${ticket}-spec.md\` tras verificar el paso.\n`;
+
+    fs.writeFileSync(path.join(steeringDir, 'ticket-context.md'), steeringContent, 'utf8');
+  }
+
+  fs.rmSync(ASSETS_DIR, { recursive: true, force: true });
+
+  console.log("\n==========================================================");
+  console.log(`✅ Orquestación AI-DLC + SDD finalizada para ${ticket}`);
+  console.log(`🌿 Rama: ${branchName}`);
+  console.log(`📄 Especificación: ${mainSpecPath}`);
+
+  if (targetRepos.length > 0 && mainSpecPath) {
+    console.log("💻 [AI-DLC Phase 3] Lanzando Kiro en modo Agent...");
+    try {
+      // 1. Abrir carpetas de los repositorios en la UI de Kiro
+      runCli('kiro', ['-r', ...targetRepos], { stdio: 'ignore' });
+
+      // 2. Invocar el chat en modo agent con fallback transparente (kiro chat -> kiro-cli chat)
+      const chatArgs = [
+        'chat', '-r', '-m', 'agent', '-a', mainSpecPath,
+        `Iniciando ${ticket}: ${taskTitle}. Revisa la especificación y comencemos con la primera Unidad de Trabajo (UoW 1).`
+      ];
+
+      let kiroChatRes = runCli('kiro', chatArgs, { cwd: mainRepoDir, stdio: 'inherit' });
+      if (kiroChatRes.status !== 0) {
+        // Fallback al alias CLI kiro-cli si el symlink gráfico no soporta el subcomando chat interactivo
+        runCli('kiro-cli', chatArgs, { cwd: mainRepoDir, stdio: 'inherit' });
+      }
+    } catch {
+      console.log(`ℹ️  Spec lista en: ${mainSpecPath}`);
+    }
+  }
+  console.log("==========================================================");
+}
+
+main().catch(err => {
+  console.error("❌ Error inesperado:", err.message);
+  process.exit(1);
+});

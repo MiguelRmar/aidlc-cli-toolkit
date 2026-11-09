@@ -1,0 +1,215 @@
+#!/usr/bin/env node
+const https = require('node:https');
+const fs = require('node:fs');
+const { spawnSync } = require('node:child_process');
+
+const API_KEY = process.env.GEMINI_API_KEY;
+if (!API_KEY) {
+  console.error("❌ GEMINI_API_KEY no está configurada.");
+  process.exit(1);
+}
+
+const DEFAULT_MODELS = [
+  'gemini-3.6-flash',
+  'gemini-3.5-flash-lite',
+  'gemini-flash-lite-latest',
+  'gemini-3.5-flash',
+  'gemini-3.7-flash',
+  'gemini-3.8-flash'
+];
+
+const MODELS = process.env.GEMINI_MODEL ? [process.env.GEMINI_MODEL, ...DEFAULT_MODELS.filter(m => m !== process.env.GEMINI_MODEL)] : DEFAULT_MODELS;
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+function readStdinSyncSafe() {
+  if (process.stdin.isTTY) return '';
+  try {
+    return fs.readFileSync(0, 'utf8');
+  } catch (e) {
+    return '';
+  }
+}
+
+function callGemini(model, promptText, timeoutMs = 75000) {
+  return new Promise((resolve, reject) => {
+    const postData = JSON.stringify({
+      contents: [{
+        parts: [{ text: promptText }]
+      }],
+      generationConfig: {
+        temperature: 0.2,
+        maxOutputTokens: 65536
+      }
+    });
+
+    const options = {
+      hostname: 'generativelanguage.googleapis.com',
+      port: 443,
+      path: `/v1beta/models/${model}:generateContent?key=${API_KEY}`,
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(postData)
+      },
+      timeout: timeoutMs
+    };
+
+    const req = https.request(options, res => {
+      const chunks = [];
+      res.on('data', chunk => chunks.push(chunk));
+      res.on('end', () => {
+        const body = Buffer.concat(chunks).toString('utf8');
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          try {
+            const parsed = JSON.parse(body);
+            const candidate = parsed.candidates?.[0];
+            const parts = candidate?.content?.parts || [];
+
+            const fullText = parts
+              .filter(p => typeof p.text === 'string' && !p.thought)
+              .map(p => p.text)
+              .join('\n')
+              .trim();
+
+            const fallbackText = !fullText && parts.length > 0
+              ? parts.map(p => p.text || '').join('\n').trim()
+              : fullText;
+
+            if (!fallbackText) {
+              return reject({ status: res.statusCode, message: `[${model}] Respuesta vacía` });
+            }
+
+            resolve({
+              text: fallbackText,
+              model,
+              finishReason: candidate?.finishReason || 'STOP'
+            });
+          } catch (e) {
+            reject({ status: res.statusCode, message: `[${model}] Error JSON: ${e.message}` });
+          }
+        } else {
+          let errMsg = body.slice(0, 120).replace(/\s+/g, ' ');
+          try {
+            const errJson = JSON.parse(body);
+            if (errJson.error?.message) errMsg = errJson.error.message;
+          } catch (e) {}
+          reject({ status: res.statusCode, message: `[${model}] HTTP ${res.statusCode}: ${errMsg}` });
+        }
+      });
+    });
+
+    req.on('timeout', () => {
+      req.destroy();
+      reject({ status: 408, message: `[${model}] Timeout (${timeoutMs / 1000}s)` });
+    });
+
+    req.on('error', err => reject({ status: 500, message: `[${model}] Red: ${err.message}` }));
+    req.write(postData);
+    req.end();
+  });
+}
+
+function isSpecComplete(text, isSpecRequest, finishReason = 'STOP') {
+  if (!isSpecRequest) return true;
+  if (finishReason === 'MAX_TOKENS' || finishReason === 'LENGTH') return false;
+
+  const hasTasksHeader = /^##\s+3\.\s*Tasks/im.test(text);
+  if (!hasTasksHeader) return false;
+
+  const trimmed = text.trim();
+  const lines = trimmed.split('\n').filter(l => l.trim().length > 0);
+  const lastLine = lines[lines.length - 1] || '';
+
+  // Línea rota evidente: "- [ ] **", o termina en coma/dos puntos/guión, o termina a mitad de frase
+  if (/\*\*\s*$/.test(lastLine) || /[,:\-\(]\s*$/m.test(trimmed) || trimmed.endsWith('...')) return false;
+  if (/^\s*-\s*\[\s*\]\s*(\*\*)?$/.test(lastLine)) return false;
+
+  // Contar Unidades de Trabajo principales (UoW)
+  const uowCount = (text.match(/^\s*-\s*\[\s*\]\s+\*\*UoW\b/gim) || []).length;
+  if (uowCount < 4) return false;
+
+  // Debe tener un Self-Check cerca del final
+  return /Self-Check/i.test(trimmed.slice(-350));
+}
+
+async function main() {
+  const args = process.argv.slice(2);
+  const stdinContent = readStdinSyncSafe();
+  
+  let fullPrompt = '';
+  if (args.length > 0) {
+    fullPrompt = args.join(' ');
+    if (stdinContent.trim()) {
+      fullPrompt += `\n\n--- CONTEXTO ADICIONAL ---\n${stdinContent}`;
+    }
+  } else if (stdinContent.trim()) {
+    fullPrompt = stdinContent;
+  } else {
+    console.error("Uso: ask-gemini \"Tu prompt aquí\"");
+    process.exit(1);
+  }
+
+  const isSpecRequest = fullPrompt.includes('## 3. Tasks');
+
+  for (const model of MODELS) {
+    try {
+      console.error(`  ⏳ Consultando ${model}...`);
+      let { text, model: usedModel, finishReason } = await callGemini(model, fullPrompt);
+
+      // Si el modelo cortó antes de terminar ## 3. Tasks, pedir auto-continuación inmediata con payload liviano
+      if (!isSpecComplete(text, isSpecRequest, finishReason)) {
+        console.error(`  🧩 [${usedModel}] Completando sección '## 3. Tasks' (finishReason: ${finishReason})...`);
+        try {
+          // Limpiar la última línea si quedó incompleta (ej: "- [ ] **")
+          const lines = text.trim().split('\n');
+          if (/^\s*-\s*\[\s*\]\s*(\*\*)?$/.test(lines[lines.length - 1] || '')) {
+            lines.pop();
+          }
+          const cleanedText = lines.join('\n');
+          const tailContext = cleanedText.slice(-600);
+
+          const continuePrompt = `Instrucción crítica: Estás completando un documento técnico de especificación interrumpido por límite de tokens.
+El texto anterior finalizó en:
+"""
+${tailContext}
+"""
+TAREA:
+Continúa inmediatamente generando las Unidades de Trabajo (UoW) restantes con formato '- [ ] **UoW X: [CLAVE] Título**', sub-checkboxes de archivos y Self-Checks.
+NO repitas UoWs ya listadas arriba. NO incluyas introducciones ni saludos.`;
+          
+          const cont = await callGemini(model, continuePrompt, 50000);
+          if (cont && cont.text) {
+            text = `${cleanedText}\n\n${cont.text.trim()}`;
+          }
+        } catch (e) {
+          console.error(`  ⚠️ Aviso en auto-continuación (${e.message || 'timeout'}). Se preserva el documento generado.`);
+        }
+      }
+
+      console.error(`  ⚡ Generado completo con: ${usedModel} (${text.length} caracteres)`);
+      process.stdout.write(text + '\n');
+      process.exit(0);
+    } catch (err) {
+      console.error(`  ↪️  Saltando ${model} (${(err.message || '').slice(0, 95)})`);
+      if (err.status === 503) await sleep(1200);
+    }
+  }
+
+  console.error("  ⚠️  Servidores Gemini con alta demanda. Activando respaldo automático con Copilot...");
+  const copilotRes = spawnSync('copilot', ['-p', fullPrompt], {
+    encoding: 'utf8',
+    maxBuffer: 50 * 1024 * 1024
+  });
+
+  if (copilotRes.status === 0 && copilotRes.stdout.trim()) {
+    console.error("  ⚡ Generado con: GitHub Copilot (Fallback)");
+    process.stdout.write(copilotRes.stdout.trim() + '\n');
+    process.exit(0);
+  }
+
+  console.error("❌ No se pudo generar respuesta en ningún proveedor.");
+  process.exit(1);
+}
+
+main();

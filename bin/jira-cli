@@ -1,0 +1,412 @@
+#!/usr/bin/env node
+const https = require('node:https');
+const fs = require('node:fs');
+const path = require('node:path');
+const os = require('node:os');
+
+// Cargar configuración persistente si existe
+const CONFIG_FILE = path.join(os.homedir(), '.config', 'aidlc', 'config.env');
+if (fs.existsSync(CONFIG_FILE)) {
+  try {
+    const lines = fs.readFileSync(CONFIG_FILE, 'utf8').split('\n');
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (trimmed && !trimmed.startsWith('#') && trimmed.includes('=')) {
+        const idx = trimmed.indexOf('=');
+        const k = trimmed.slice(0, idx).trim();
+        let v = trimmed.slice(idx + 1).trim();
+        if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) v = v.slice(1, -1);
+        if (!process.env[k]) process.env[k] = v;
+      }
+    }
+  } catch {}
+}
+
+const JIRA_BASE_URL = (
+  process.env.JIRA_URL ||
+  process.env.ATLASSIAN_INSTANCE_URL ||
+  process.env.JIRA_BASE_URL ||
+  ''
+).replace(/\/+$/, '');
+
+if (!JIRA_BASE_URL) {
+  console.error("❌ Falta configurar la URL de Jira (JIRA_URL) en ~/.config/aidlc/config.env.");
+  process.exit(1);
+}
+
+const JIRA_USERNAME =
+  process.env.JIRA_USERNAME ||
+  process.env.ATLASSIAN_USERNAME ||
+  process.env.JIRA_EMAIL ||
+  process.env.JIRA_USER;
+
+const JIRA_API_TOKEN =
+  process.env.JIRA_API_TOKEN ||
+  process.env.ATLASSIAN_API_KEY ||
+  process.env.JIRA_TOKEN;
+
+if (!JIRA_USERNAME || !JIRA_API_TOKEN) {
+  console.error("❌ Faltan credenciales JIRA_USERNAME o JIRA_API_TOKEN.");
+  process.exit(1);
+}
+
+const authHeader = 'Basic ' + Buffer.from(`${JIRA_USERNAME}:${JIRA_API_TOKEN}`).toString('base64');
+
+function jiraRequest(method, apiPath, bodyObj = null) {
+  return new Promise((resolve, reject) => {
+    const baseUrl = JIRA_BASE_URL.startsWith('http') ? JIRA_BASE_URL : `https://${JIRA_BASE_URL}`;
+    const url = new URL(baseUrl + apiPath);
+    const bodyStr = bodyObj ? JSON.stringify(bodyObj) : null;
+
+    const options = {
+      hostname: url.hostname,
+      port: 443,
+      path: url.pathname + url.search,
+      method,
+      headers: {
+        'Authorization': authHeader,
+        'Accept': 'application/json',
+        'Content-Type': 'application/json'
+      }
+    };
+
+    if (bodyStr) {
+      options.headers['Content-Length'] = Buffer.byteLength(bodyStr);
+    }
+
+    const req = https.request(options, res => {
+      const chunks = [];
+      res.on('data', chunk => chunks.push(chunk));
+      res.on('end', () => {
+        const raw = Buffer.concat(chunks).toString('utf8');
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          if (!raw.trim()) return resolve({});
+          try {
+            resolve(JSON.parse(raw));
+          } catch (e) {
+            resolve({});
+          }
+        } else {
+          reject(new Error(`Jira HTTP ${res.statusCode}: ${raw.slice(0, 200)}`));
+        }
+      });
+    });
+
+    req.on('error', reject);
+    if (bodyStr) req.write(bodyStr);
+    req.end();
+  });
+}
+
+function adfToText(node) {
+  if (!node) return '';
+  if (typeof node === 'string') return node;
+  if (Array.isArray(node)) return node.map(adfToText).join('');
+
+  let text = '';
+  if (node.type === 'text') {
+    text += node.text || '';
+    if (Array.isArray(node.marks)) {
+      for (const mark of node.marks) {
+        if (mark.type === 'link' && mark.attrs?.href && !text.includes(mark.attrs.href)) {
+          text += ` (${mark.attrs.href})`;
+        }
+      }
+    }
+  } else if (node.type === 'inlineCard' || node.type === 'blockCard' || node.type === 'embedCard') {
+    if (node.attrs?.url) text += ` ${node.attrs.url} `;
+  } else if (node.type === 'hardBreak') {
+    text += '\n';
+  }
+
+  if (Array.isArray(node.content)) {
+    text += node.content.map(adfToText).join('');
+  }
+
+  if (['paragraph', 'heading', 'bulletList', 'orderedList', 'listItem', 'blockquote', 'codeBlock'].includes(node.type)) {
+    text += '\n';
+  }
+
+  return text;
+}
+
+function extractFigmaUrls(...sources) {
+  const rawJson = JSON.stringify(sources);
+  const matches = rawJson.match(/https?:\\?\/\\?\/[a-zA-Z0-9.-]*figma\.com\\?\/[^"\s\\<>\]]+/gi) || [];
+  const cleaned = matches.map(u => u.replace(/\\\//g, '/').replace(/[),.;]+$/, ''));
+  return [...new Set(cleaned)];
+}
+
+async function listMyIssues({ includeDone = false, includeSubtasks = false, asJson = false } = {}) {
+  const conditions = ['assignee = currentUser()'];
+  if (!includeDone) {
+    conditions.push('statusCategory != Done');
+  }
+  if (!includeSubtasks) {
+    conditions.push('issuetype in standardIssueTypes()');
+  }
+
+  const jql = `${conditions.join(' AND ')} ORDER BY updated DESC`;
+
+  let data;
+  try {
+    data = await jiraRequest('POST', '/rest/api/3/search/jql', {
+      jql,
+      maxResults: 40,
+      fields: ['summary', 'status', 'issuetype', 'priority', 'components', 'parent', 'subtasks', 'updated']
+    });
+  } catch (e) {
+    const query = new URLSearchParams({
+      jql,
+      maxResults: '40',
+      fields: 'summary,status,issuetype,priority,components,parent,subtasks,updated'
+    }).toString();
+    data = await jiraRequest('GET', `/rest/api/3/search?${query}`);
+  }
+
+  let issues = (data.issues || []).filter(issue => {
+    if (includeSubtasks) return true;
+    const isSubtaskFlag = issue.fields?.issuetype?.subtask === true;
+    const typeName = (issue.fields?.issuetype?.name || '').toLowerCase();
+    const isSubtaskName = /sub-?task|sub-?tarea|criterio de aceptaci/i.test(typeName);
+    return !isSubtaskFlag && !isSubtaskName;
+  });
+
+  if (asJson) {
+    const simplified = issues.map(i => ({
+      key: i.key,
+      type: i.fields?.issuetype?.name || 'Story',
+      status: i.fields?.status?.name || 'Unknown',
+      components: (i.fields?.components || []).map(c => c.name),
+      subtasksCount: (i.fields?.subtasks || []).length,
+      summary: (i.fields?.summary || '').trim()
+    }));
+    console.log(JSON.stringify(simplified));
+    return;
+  }
+
+  if (issues.length === 0) {
+    console.log("🎉 No tienes historias principales pendientes asignadas en este momento.");
+    return;
+  }
+
+  console.log(`\n📋 TUS HISTORIAS PRINCIPALES EN JIRA (${issues.length}):`);
+  console.log("=".repeat(110));
+  console.log(
+    `${"#".padEnd(3)} | ${"CLAVE".padEnd(11)} | ${"TIPO".padEnd(12)} | ${"ESTADO".padEnd(18)} | ${"COMPONENTE".padEnd(24)} | RESUMEN`
+  );
+  console.log("-".repeat(110));
+
+  issues.forEach((issue, idx) => {
+    const num = String(idx + 1).padEnd(3);
+    const key = (issue.key || '').padEnd(11);
+    const type = (issue.fields?.issuetype?.name || 'Story').slice(0, 12).padEnd(12);
+    const status = (issue.fields?.status?.name || 'Unknown').slice(0, 18).padEnd(18);
+    const comps = (issue.fields?.components || []).map(c => c.name).join(',') || '-';
+    const compStr = comps.slice(0, 24).padEnd(24);
+    const summary = (issue.fields?.summary || '').trim();
+    const stCount = (issue.fields?.subtasks || []).length;
+    const stBadge = stCount > 0 ? ` (${stCount} subtareas)` : '';
+
+    console.log(`${num} | ${key} | ${type} | ${status} | ${compStr} | ${summary}${stBadge}`);
+  });
+  console.log("=".repeat(110) + "\n");
+}
+
+// Hidrata en una sola llamada JQL (con fallback paralelo) todas las subtareas con sus descripciones completas
+async function fetchHydratedSubtasks(parentKey, rawSubtasks) {
+  if (!rawSubtasks || rawSubtasks.length === 0) return [];
+
+  try {
+    const jql = `parent = "${parentKey}" ORDER BY key ASC`;
+    let searchRes;
+    try {
+      searchRes = await jiraRequest('POST', '/rest/api/3/search/jql', {
+        jql,
+        maxResults: 100,
+        fields: ['summary', 'description', 'status', 'issuetype', 'components', 'customfield_11391']
+      });
+    } catch (e) {
+      const q = new URLSearchParams({
+        jql,
+        maxResults: '100',
+        fields: 'summary,description,status,issuetype,components,customfield_11391'
+      }).toString();
+      searchRes = await jiraRequest('GET', `/rest/api/3/search?${q}`);
+    }
+
+    if (searchRes && Array.isArray(searchRes.issues) && searchRes.issues.length > 0) {
+      const mapByKey = new Map(searchRes.issues.map(i => [i.key, i]));
+      return rawSubtasks.map(st => mapByKey.get(st.key) || st);
+    }
+  } catch (err) {}
+
+  // Fallback: consultar individualmente en paralelo si el endpoint search falla
+  return Promise.all(
+    rawSubtasks.map(async st => {
+      try {
+        return await jiraRequest('GET', `/rest/api/3/issue/${encodeURIComponent(st.key)}?fields=summary,description,status,issuetype,components,customfield_11391`);
+      } catch (e) {
+        return st;
+      }
+    })
+  );
+}
+
+async function fetchIssueDetails(issueKey) {
+  const issue = await jiraRequest('GET', `/rest/api/3/issue/${encodeURIComponent(issueKey)}`);
+  const fields = issue.fields || {};
+
+  const summary = (fields.summary || '').trim();
+  const status = fields.status ? fields.status.name : 'Unknown';
+  const desc = adfToText(fields.description).trim();
+
+  // Hidratar descripciones completas de todas las subtareas (Criterios de aceptación + Subtareas técnicas)
+  const hydratedSubtasks = await fetchHydratedSubtasks(issueKey, fields.subtasks || []);
+
+  // Unificar componentes del padre + componentes definidos en las subtareas
+  const allComponents = new Set((fields.components || []).map(c => c.name));
+  for (const st of hydratedSubtasks) {
+    for (const c of (st.fields?.components || [])) {
+      if (c.name) allComponents.add(c.name);
+    }
+  }
+  const components = [...allComponents].join(', ');
+
+  // Extraer URLs de Figma tanto del padre como de las subtareas hidratadas
+  const figmaUrls = extractFigmaUrls(fields.customfield_11391, fields.description, hydratedSubtasks, fields);
+  const figma = figmaUrls.join(' ');
+
+  console.log(`JIRA TICKET: ${issueKey} - ${summary}`);
+  console.log(`STATUS: ${status}`);
+  console.log(`COMPONENTS: ${components}`);
+  console.log(`FIGMA_URLS: ${figma}`);
+  console.log(`\nDESCRIPTION:\n${desc || '(Sin descripción en el ticket padre - ver criterios y subtareas abajo)'}`);
+
+  if (hydratedSubtasks.length > 0) {
+    const criteriaList = [];
+    const techTasksList = [];
+
+    for (const st of hydratedSubtasks) {
+      const typeName = st.fields?.issuetype ? st.fields.issuetype.name : 'Sub-task';
+      const stSummary = (st.fields?.summary || '').trim();
+      const stStatus = st.fields?.status ? st.fields.status.name : 'Unknown';
+      const stDesc = adfToText(st.fields?.description).trim();
+
+      const itemObj = { key: st.key, typeName, summary: stSummary, status: stStatus, description: stDesc };
+      if (/criterio|acceptance/i.test(typeName)) {
+        criteriaList.push(itemObj);
+      } else {
+        techTasksList.push(itemObj);
+      }
+    }
+
+    if (criteriaList.length > 0) {
+      console.log(`\nACCEPTANCE CRITERIA (${criteriaList.length} CRITERIOS DE ACEPTACIÓN REALES):`);
+      for (const c of criteriaList) {
+        console.log(`\n### [${c.typeName}] ${c.key}: ${c.summary} (Status: ${c.status})`);
+        if (c.description) {
+          console.log(c.description);
+        } else {
+          console.log(`(Sin descripción adicional, guiarse por el título: ${c.summary})`);
+        }
+      }
+    }
+
+    if (techTasksList.length > 0) {
+      console.log(`\nTECHNICAL SUBTASKS (${techTasksList.length} SUBTAREAS TÉCNICAS DE IMPLEMENTACIÓN):`);
+      for (const t of techTasksList) {
+        console.log(`\n### [${t.typeName}] ${t.key}: ${t.summary} (Status: ${t.status})`);
+        if (t.description) {
+          console.log(t.description);
+        }
+      }
+    }
+  }
+}
+
+async function transitionIssue(issueKey, mode) {
+  const issue = await jiraRequest('GET', `/rest/api/3/issue/${encodeURIComponent(issueKey)}?fields=status`);
+  const currentStatus = (issue.fields?.status?.name || '').trim();
+  const currentCategory = (issue.fields?.status?.statusCategory?.key || '').trim();
+
+  const transitionsData = await jiraRequest('GET', `/rest/api/3/issue/${encodeURIComponent(issueKey)}/transitions`);
+  const transitions = transitionsData.transitions || [];
+
+  if (mode === 'start') {
+    const isInitialState =
+      currentCategory === 'new' ||
+      /^(por hacer|to do|backlog|abierto|open|nuevo|new|pendiente|tareas por hacer1?)$/i.test(currentStatus);
+
+    if (!isInitialState) {
+      console.log(`ℹ️  El ticket ${issueKey} está en '${currentStatus}'. Se mantiene su estado actual.`);
+      return;
+    }
+
+    const target = transitions.find(t =>
+      /desarrollo|progreso|progress|iniciar|start|curso/i.test(t.name) ||
+      /desarrollo|progreso|progress|curso/i.test(t.to?.name || '')
+    );
+
+    if (!target) {
+      console.log(`ℹ️  No se encontró transición a 'En desarrollo' desde '${currentStatus}'.`);
+      return;
+    }
+
+    await jiraRequest('POST', `/rest/api/3/issue/${encodeURIComponent(issueKey)}/transitions`, {
+      transition: { id: target.id }
+    });
+    console.log(`✔ Ticket ${issueKey} movido a '${target.to?.name || target.name}' (ID: ${target.id}).`);
+  } else if (mode === 'validate') {
+    if (/validaci[oó]n|qa|pruebas|testing|done|finalizado|cerrado/i.test(currentStatus)) {
+      console.log(`ℹ️  El ticket ${issueKey} ya está en '${currentStatus}'.`);
+      return;
+    }
+
+    const target =
+      transitions.find(t => String(t.id) === '91') ||
+      transitions.find(t => /validaci[oó]n|qa|pruebas|review|revisi[oó]n/i.test(t.name)) ||
+      transitions.find(t => /validaci[oó]n|qa|pruebas|review|revisi[oó]n/i.test(t.to?.name || ''));
+
+    if (!target) {
+      console.log(`⚠️  Transiciones disponibles desde '${currentStatus}': ${transitions.map(t => `${t.name} (${t.id})`).join(', ')}`);
+      return;
+    }
+
+    await jiraRequest('POST', `/rest/api/3/issue/${encodeURIComponent(issueKey)}/transitions`, {
+      transition: { id: target.id }
+    });
+    console.log(`✔ Ticket ${issueKey} movido a '${target.to?.name || target.name}' (ID: ${target.id}).`);
+  }
+}
+
+async function main() {
+  const args = process.argv.slice(2);
+  if (args.length === 0) {
+    console.log("Uso:");
+    console.log("  jira-cli my-issues [--all] [--subtasks]  # Listar tus historias principales asignadas");
+    console.log("  jira-cli <TICKET-KEY>                    # Ver detalles completos + descripciones de subtareas");
+    console.log("  jira-cli start <TICKET-KEY>              # Pasar a 'En desarrollo'");
+    console.log("  jira-cli validate <TICKET-KEY>           # Pasar a 'Paso a validación' (ID: 91)");
+    process.exit(1);
+  }
+
+  const cmd = args[0].toLowerCase();
+  if (['my-issues', 'mine', 'list', 'mis-tickets'].includes(cmd)) {
+    const includeDone = args.includes('--all') || args.includes('-a');
+    const includeSubtasks = args.includes('--subtasks') || args.includes('-s');
+    const asJson = args.includes('--json');
+    await listMyIssues({ includeDone, includeSubtasks, asJson });
+  } else if (cmd === 'start' && args[1]) {
+    await transitionIssue(args[1].toUpperCase(), 'start');
+  } else if ((cmd === 'validate' || cmd === 'finish') && args[1]) {
+    await transitionIssue(args[1].toUpperCase(), 'validate');
+  } else {
+    await fetchIssueDetails(args[0].toUpperCase());
+  }
+}
+
+main().catch(err => {
+  console.error(`❌ Error en jira-cli: ${err.message}`);
+  process.exit(1);
+});

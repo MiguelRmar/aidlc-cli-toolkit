@@ -1,0 +1,27 @@
+# Entorno y Secretos locales
+.env
+*.env
+.config/
+config.env
+
+# Dependencias y logs
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Archivos del Sistema Operativo
+.DS_Store
+Thumbs.db
+
+# Temporales de IDEs y editores
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Caché local y specs generadas
+.kiro/
+.ai_plans/
+coverage/
+

@@ -1,0 +1,147 @@
+#!/usr/bin/env node
+const https = require('node:https');
+const fs = require('node:fs');
+const path = require('node:path');
+const os = require('node:os');
+
+// Cargar configuración persistente si existe
+const CONFIG_FILE = path.join(os.homedir(), '.config', 'aidlc', 'config.env');
+if (fs.existsSync(CONFIG_FILE)) {
+  try {
+    const lines = fs.readFileSync(CONFIG_FILE, 'utf8').split('\n');
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (trimmed && !trimmed.startsWith('#') && trimmed.includes('=')) {
+        const idx = trimmed.indexOf('=');
+        const k = trimmed.slice(0, idx).trim();
+        let v = trimmed.slice(idx + 1).trim();
+        if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) v = v.slice(1, -1);
+        if (!process.env[k]) process.env[k] = v;
+      }
+    }
+  } catch {}
+}
+
+const username = process.env.CONFLUENCE_USERNAME || process.env.JIRA_USERNAME || process.env.ATLASSIAN_USERNAME;
+const token = process.env.CONFLUENCE_API_TOKEN || process.env.JIRA_API_TOKEN || process.env.ATLASSIAN_API_KEY;
+const rawUrl = process.env.CONFLUENCE_URL || (process.env.JIRA_URL ? `${process.env.JIRA_URL}/wiki` : '');
+
+if (!rawUrl) {
+  console.error("❌ Falta configurar CONFLUENCE_URL en ~/.config/aidlc/config.env.");
+  process.exit(1);
+}
+
+if (!username || !token) {
+  console.error("Error: Faltan credenciales JIRA_USERNAME o JIRA_API_TOKEN.");
+  process.exit(1);
+}
+
+const host = rawUrl.replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+const auth = Buffer.from(`${username}:${token}`).toString('base64');
+
+const action = process.argv[2];
+const target = process.argv.slice(3).join(' ');
+
+if (!action || !['search', 'page'].includes(action)) {
+  console.error("Uso:");
+  console.error("  confluence-cli search <términos>");
+  console.error("  confluence-cli page <pageId>");
+  process.exit(1);
+}
+
+function requestConfluence(path) {
+  return new Promise((resolve, reject) => {
+    const options = {
+      hostname: host,
+      path: path,
+      method: 'GET',
+      headers: {
+        'Authorization': `Basic ${auth}`,
+        'Accept': 'application/json',
+        'X-Atlassian-Token': 'no-check',
+        'User-Agent': 'Node-Confluence-CLI'
+      }
+    };
+
+    const req = https.request(options, (res) => {
+      let body = '';
+      res.on('data', chunk => body += chunk);
+      res.on('end', () => {
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          try {
+            resolve(JSON.parse(body));
+          } catch (e) {
+            reject(new Error("Error parseando respuesta JSON"));
+          }
+        } else {
+          reject(new Error(`HTTP ${res.statusCode}: ${body.slice(0, 200)}`));
+        }
+      });
+    });
+
+    req.on('error', err => reject(err));
+    req.end();
+  });
+}
+
+function stripHtml(html) {
+  if (!html) return '';
+  return html
+    .replace(/<h[1-6][^>]*>(.*?)<\/h[1-6]>/gi, '\n\n### $1\n')
+    .replace(/<p[^>]*>(.*?)<\/p>/gi, '\n$1')
+    .replace(/<li[^>]*>(.*?)<\/li>/gi, '\n* $1')
+    .replace(/<code[^>]*>(.*?)<\/code>/gi, '`$1`')
+    .replace(/<pre[^>]*>(.*?)<\/pre>/gis, '\n```\n$1\n```\n')
+    .replace(/<br\s*[\/]?>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '&')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+async function run() {
+  try {
+    if (action === 'search') {
+      if (!target) {
+        console.error("Especifica los términos. Ej: confluence-cli search \"contratos\"");
+        process.exit(1);
+      }
+      const cql = encodeURIComponent(`text ~ "${target}" order by lastModified desc`);
+      const data = await requestConfluence(`/wiki/rest/api/content/search?cql=${cql}&limit=5`);
+
+      if (!data.results || data.results.length === 0) {
+        console.log(`No se encontraron páginas para: "${target}"`);
+        return;
+      }
+
+      console.log(`\n=== RESULTADOS CONFLUENCE ===\n`);
+      data.results.forEach((page, idx) => {
+        console.log(`${idx + 1}. [ID: ${page.id}] ${page.title}`);
+        console.log(`   URL: https://${host}/wiki${page._links?.webui || ''}\n`);
+      });
+    } else if (action === 'page') {
+      if (!target) {
+        console.error("Especifica el ID. Ej: confluence-cli page 5456462584");
+        process.exit(1);
+      }
+      const data = await requestConfluence(`/wiki/rest/api/content/${target}?expand=body.storage,version`);
+      console.log(`\n======================================================`);
+      console.log(`CONFLUENCE: ${data.title} (v${data.version?.number || 1})`);
+      console.log(`ID: ${data.id}`);
+      console.log(`======================================================\n`);
+
+      const htmlBody = data.body?.storage?.value || '';
+      console.log(stripHtml(htmlBody));
+      console.log('');
+    }
+  } catch (err) {
+    console.error("Error al consultar Confluence:", err.message);
+    process.exit(1);
+  }
+}
+
+run();

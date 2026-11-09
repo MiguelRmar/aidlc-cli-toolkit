@@ -1,0 +1,167 @@
+#!/usr/bin/env node
+const https = require('node:https');
+const fs = require('node:fs');
+const path = require('node:path');
+const os = require('node:os');
+
+// Cargar configuración persistente si existe
+const CONFIG_FILE = path.join(os.homedir(), '.config', 'aidlc', 'config.env');
+if (fs.existsSync(CONFIG_FILE)) {
+  try {
+    const lines = fs.readFileSync(CONFIG_FILE, 'utf8').split('\n');
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (trimmed && !trimmed.startsWith('#') && trimmed.includes('=')) {
+        const idx = trimmed.indexOf('=');
+        const k = trimmed.slice(0, idx).trim();
+        let v = trimmed.slice(idx + 1).trim();
+        if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) v = v.slice(1, -1);
+        if (!process.env[k]) process.env[k] = v;
+      }
+    }
+  } catch {}
+}
+
+const token = process.env.FIGMA_ACCESS_TOKEN;
+if (!token) {
+  console.error("Error: La variable de entorno FIGMA_ACCESS_TOKEN no está configurada.");
+  process.exit(1);
+}
+
+function parseFigmaUrl(rawUrl) {
+  try {
+    const url = new URL(rawUrl);
+    const parts = url.pathname.split('/').filter(Boolean);
+    // Casos: /design/:fileKey/:title o /file/:fileKey/:title
+    const fileIndex = parts.findIndex(p => p === 'design' || p === 'file');
+    const fileKey = fileIndex !== -1 ? parts[fileIndex + 1] : parts[0];
+    const nodeIdParam = url.searchParams.get('node-id');
+    const nodeId = nodeIdParam ? nodeIdParam.replace('-', ':') : null;
+    return { fileKey, nodeId };
+  } catch (e) {
+    return { fileKey: rawUrl, nodeId: null };
+  }
+}
+
+function figmaRequest(endpointPath) {
+  return new Promise((resolve, reject) => {
+    const options = {
+      hostname: 'api.figma.com',
+      port: 443,
+      path: endpointPath,
+      method: 'GET',
+      headers: {
+        'X-Figma-Token': token,
+        'Accept': 'application/json'
+      }
+    };
+
+    const req = https.request(options, (res) => {
+      let rawData = '';
+      res.on('data', chunk => rawData += chunk);
+      res.on('end', () => {
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          try {
+            resolve(JSON.parse(rawData));
+          } catch (e) {
+            reject(new Error("Error parseando respuesta JSON de Figma"));
+          }
+        } else {
+          reject(new Error(`Figma API HTTP ${res.statusCode}: ${rawData.slice(0, 300)}`));
+        }
+      });
+    });
+
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+function downloadImage(imageUrl, destPath) {
+  return new Promise((resolve, reject) => {
+    https.get(imageUrl, (res) => {
+      if (res.statusCode !== 200) {
+        return reject(new Error(`Fallo descargando imagen HTTP ${res.statusCode}`));
+      }
+      const fileStream = fs.createWriteStream(destPath);
+      res.pipe(fileStream);
+      fileStream.on('finish', () => {
+        fileStream.close();
+        resolve(destPath);
+      });
+    }).on('error', reject);
+  });
+}
+
+function simplifyNode(node, depth = 0) {
+  if (!node || depth > 5) return null;
+  const simplified = {
+    name: node.name,
+    type: node.type,
+    characters: node.characters || undefined,
+    componentId: node.componentId || undefined
+  };
+
+  if (Array.isArray(node.children)) {
+    simplified.children = node.children
+      .map(child => simplifyNode(child, depth + 1))
+      .filter(Boolean);
+  }
+
+  return simplified;
+}
+
+async function main() {
+  const inputUrl = process.argv[2];
+  const outputDir = process.argv[3] || null;
+
+  if (!inputUrl) {
+    console.log("Uso: figma-cli <URL_FIGMA> [DIRECTORIO_DESTINO_IMAGENES]");
+    process.exit(1);
+  }
+
+  const { fileKey, nodeId } = parseFigmaUrl(inputUrl);
+  if (!fileKey) {
+    console.error("Error: No se pudo extraer la clave de archivo (fileKey) de la URL.");
+    process.exit(1);
+  }
+
+  try {
+    let endpoint = `/v1/files/${fileKey}`;
+    if (nodeId) {
+      endpoint = `/v1/files/${fileKey}/nodes?ids=${encodeURIComponent(nodeId)}`;
+    }
+
+    const data = await figmaRequest(endpoint);
+    let targetNode = null;
+
+    if (nodeId && data.nodes && data.nodes[nodeId]) {
+      targetNode = data.nodes[nodeId].document;
+    } else if (data.document) {
+      targetNode = data.document;
+    }
+
+    const simplifiedTree = simplifyNode(targetNode);
+    console.log(`FIGMA FILE: ${fileKey}`);
+    if (nodeId) console.log(`FIGMA NODE: ${nodeId}`);
+    console.log("\nESTRUCTURA DE COMPONENTES Y CAPAS:");
+    console.log(JSON.stringify(simplifiedTree, null, 2));
+
+    // Descarga de captura visual si se especificó nodeId y directorio destino
+    if (nodeId && outputDir) {
+      fs.mkdirSync(outputDir, { recursive: true });
+      const imgData = await figmaRequest(`/v1/images/${fileKey}?ids=${encodeURIComponent(nodeId)}&format=png&scale=2`);
+      const imgUrl = imgData.images && imgData.images[nodeId];
+      if (imgUrl) {
+        const dest = path.join(outputDir, `figma-${nodeId.replace(':', '_')}.png`);
+        await downloadImage(imgUrl, dest);
+        console.log(`\nCAPTURA DESCARGADA: ${dest}`);
+      }
+    }
+  } catch (err) {
+    console.error("Error al consultar Figma:", err.message);
+    process.exit(1);
+  }
+}
+
+main();
