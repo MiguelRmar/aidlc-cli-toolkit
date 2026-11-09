@@ -723,16 +723,18 @@ Para cada Unidad de Trabajo (UoW) en \`## 3. Tasks\` (tanto las de Jira como las
 
   if (targetRepos.length > 0 && mainSpecPath) {
     console.log("\n==========================================================");
-    console.log("🎯 ¿Cómo deseas continuar el desarrollo?");
-    console.log("  1) 🖥️  Abrir en Kiro IDE (interfaz gráfica) [Recomendado]");
-    console.log("  2) 💻  Continuar en terminal con Kiro CLI (chat interactivo)");
-    console.log("  3) 🚪  Finalizar aquí (solo preparar archivos)");
+    console.log("🎯 ¿Dónde deseas abrir el proyecto y la especificación?");
+    console.log("  1) 🖥️  Kiro IDE (interfaz gráfica) [Recomendado - Enter]");
+    console.log("  2) ⚡  Cursor");
+    console.log("  3) 💻  Visual Studio Code");
+    console.log("  4) 📟  Kiro CLI (chat interactivo en terminal)");
+    console.log("  5) 🚪  Ninguno (solo preparar ramas y especificación)");
     console.log("==========================================================");
 
     const rl = readline.createInterface({ input, output });
     let choice = '1';
     try {
-      const ans = await rl.question("👉 Selecciona una opción [1/2/3, Enter = 1]: ");
+      const ans = await rl.question("👉 Selecciona una opción [1-5, Enter = 1]: ");
       choice = ans.trim() || '1';
     } finally {
       rl.close();
@@ -740,7 +742,6 @@ Para cada Unidad de Trabajo (UoW) en \`## 3. Tasks\` (tanto las de Jira como las
 
     if (choice === '1') {
       console.log("\n🚀 Abriendo repositorios y especificación en Kiro IDE...");
-      // Abrir repositorios y la spec en el editor gráfico Kiro
       runCli('kiro', ['-r', ...targetRepos, mainSpecPath], { stdio: 'ignore' });
       if (process.platform === 'darwin') {
         runCli('open', ['-a', 'Kiro', ...targetRepos], { stdio: 'ignore' });
@@ -748,6 +749,22 @@ Para cada Unidad de Trabajo (UoW) en \`## 3. Tasks\` (tanto las de Jira como las
       console.log(`✔ Kiro IDE iniciado.`);
       console.log(`📄 Especificación abierta: ${mainSpecPath}\n`);
     } else if (choice === '2') {
+      console.log("\n🚀 Abriendo repositorios y especificación en Cursor...");
+      const res = runCli('cursor', [...targetRepos, mainSpecPath], { stdio: 'ignore' });
+      if (res.status !== 0 && process.platform === 'darwin') {
+        runCli('open', ['-a', 'Cursor', ...targetRepos], { stdio: 'ignore' });
+      }
+      console.log(`✔ Cursor iniciado.`);
+      console.log(`📄 Especificación abierta: ${mainSpecPath}\n`);
+    } else if (choice === '3') {
+      console.log("\n🚀 Abriendo repositorios y especificación en VS Code...");
+      const res = runCli('code', [...targetRepos, mainSpecPath], { stdio: 'ignore' });
+      if (res.status !== 0 && process.platform === 'darwin') {
+        runCli('open', ['-a', 'Visual Studio Code', ...targetRepos], { stdio: 'ignore' });
+      }
+      console.log(`✔ VS Code iniciado.`);
+      console.log(`📄 Especificación abierta: ${mainSpecPath}\n`);
+    } else if (choice === '4') {
       console.log("\n💻 Iniciando Kiro CLI en la terminal...");
       const promptInput = `Iniciando ${ticket}: ${taskTitle}. Revisa la especificación en ${mainSpecPath} y comencemos con la primera Unidad de Trabajo (UoW 1).`;
       runCli('kiro-cli', ['chat', promptInput], { cwd: mainRepoDir, stdio: 'inherit' });
