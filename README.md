@@ -94,9 +94,38 @@ La suite se compone de 5 herramientas ligeras y desacopladas en `bin/`:
 
 ---
 
-## 🛠️ Configuración (`~/.config/aidlc/config.env`)
+## 🛠️ Configuración Inicial
 
-El asistente interactivo de `feature-start` creará este archivo automáticamente la primera vez que lo ejecutes. También puedes crearlo manualmente a partir de la plantilla:
+Tienes dos formas de configurar tus credenciales y entorno:
+
+### Opción 1: Asistente Interactivo Automático (Recomendada)
+Simplemente ejecuta `feature-start` con cualquier ticket (por ejemplo `feature-start PROJ-101`). Si es tu primera vez o falta alguna variable, el asistente interactivo te solicitará en consola:
+
+1. **📁 Directorio de Repositorios (`PROJECTS_BASE_DIR`):** La carpeta local donde clonas tus proyectos (por defecto: `~/Documents/GitHub`).
+2. **🌐 URL de Jira (`JIRA_URL`):** La dirección base de tu Jira en Atlassian (ej: `https://tu-organizacion.atlassian.net`).
+3. **📚 URL de Confluence (`CONFLUENCE_URL`):** La dirección de la wiki (se sugiere automáticamente `${JIRA_URL}/wiki`).
+4. **📧 Correo Atlassian (`JIRA_USERNAME`):** Tu correo electrónico con el que accedes a Jira/Confluence.
+5. **🔑 API Token de Atlassian (`JIRA_API_TOKEN`):** Tu token generado en [https://id.atlassian.com/manage-profile/security/api-tokens](https://id.atlassian.com/manage-profile/security/api-tokens).
+6. **🤖 Gemini API Key (`GEMINI_API_KEY`):** Tu clave gratuita obtenida en [https://aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey).
+7. **🎨 Figma Token (`FIGMA_ACCESS_TOKEN`):** Opcional, para descargar componentes si tu ticket incluye mockups.
+
+El asistente guardará automáticamente tus datos en `~/.config/aidlc/config.env` con permisos restringidos de usuario (`chmod 600`).
+
+### Opción 2: Configuración Manual
+Si prefieres definirlo antes de la primera ejecución:
+
+```bash
+# 1. Crear carpeta de configuración
+mkdir -p ~/.config/aidlc
+
+# 2. Copiar la plantilla
+cp templates/config.env.example ~/.config/aidlc/config.env
+
+# 3. Editar con tu editor favorito
+nano ~/.config/aidlc/config.env
+```
+
+Contenido de referencia para `~/.config/aidlc/config.env`:
 
 ```bash
 # Directorio donde se encuentran tus repositorios locales

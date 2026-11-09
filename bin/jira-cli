@@ -22,6 +22,12 @@ if (fs.existsSync(CONFIG_FILE)) {
   } catch {}
 }
 
+function isPlaceholder(val) {
+  if (!val || typeof val !== 'string' || !val.trim()) return true;
+  const lower = val.toLowerCase().trim();
+  return ['tu-dominio', 'tu-organizacion', 'tu-empresa', 'tu-correo'].some(p => lower.includes(p));
+}
+
 const JIRA_BASE_URL = (
   process.env.JIRA_URL ||
   process.env.ATLASSIAN_INSTANCE_URL ||
@@ -29,8 +35,8 @@ const JIRA_BASE_URL = (
   ''
 ).replace(/\/+$/, '');
 
-if (!JIRA_BASE_URL) {
-  console.error("❌ Falta configurar la URL de Jira (JIRA_URL) en ~/.config/aidlc/config.env.");
+if (!JIRA_BASE_URL || isPlaceholder(JIRA_BASE_URL)) {
+  console.error("❌ Falta configurar la URL de Jira (JIRA_URL) o tiene un valor de plantilla.\n👉 Ejecuta 'feature-start <TICKET>' para configurar tus credenciales interactivamente o edita ~/.config/aidlc/config.env");
   process.exit(1);
 }
 
@@ -45,8 +51,8 @@ const JIRA_API_TOKEN =
   process.env.ATLASSIAN_API_KEY ||
   process.env.JIRA_TOKEN;
 
-if (!JIRA_USERNAME || !JIRA_API_TOKEN) {
-  console.error("❌ Faltan credenciales JIRA_USERNAME o JIRA_API_TOKEN.");
+if (!JIRA_USERNAME || !JIRA_API_TOKEN || isPlaceholder(JIRA_USERNAME)) {
+  console.error("❌ Faltan credenciales válidas (JIRA_USERNAME o JIRA_API_TOKEN).\n👉 Ejecuta 'feature-start <TICKET>' para configurar tus credenciales interactivamente o edita ~/.config/aidlc/config.env");
   process.exit(1);
 }
 

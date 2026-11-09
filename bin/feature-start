@@ -39,25 +39,35 @@ function loadPersistentEnv() {
 // Cargar variables persistentes guardadas anteriormente
 loadPersistentEnv();
 
-async function runInteractiveOnboarding() {
-  const missing = [];
-  if (!process.env.JIRA_USERNAME) missing.push('JIRA_USERNAME');
-  if (!process.env.JIRA_API_TOKEN) missing.push('JIRA_API_TOKEN');
-  if (!process.env.GEMINI_API_KEY) missing.push('GEMINI_API_KEY');
+function isPlaceholderOrEmpty(val) {
+  if (!val || typeof val !== 'string' || !val.trim()) return true;
+  const lower = val.toLowerCase().trim();
+  const placeholders = ['tu-dominio', 'tu-organizacion', 'tu-correo', 'tu-empresa', 'tu-api-token', 'tu-gemini-api-key', 'tu-figma-token'];
+  return placeholders.some(p => lower.includes(p));
+}
 
-  if (missing.length === 0) return;
+async function runInteractiveOnboarding() {
+  const needsConfig =
+    isPlaceholderOrEmpty(process.env.PROJECTS_BASE_DIR) ||
+    isPlaceholderOrEmpty(process.env.JIRA_URL) ||
+    isPlaceholderOrEmpty(process.env.CONFLUENCE_URL) ||
+    isPlaceholderOrEmpty(process.env.JIRA_USERNAME) ||
+    isPlaceholderOrEmpty(process.env.JIRA_API_TOKEN) ||
+    isPlaceholderOrEmpty(process.env.GEMINI_API_KEY);
+
+  if (!needsConfig) return;
 
   console.log("\n=================================================================================");
   console.log("👋 ¡BIENVENIDO AL ENTORNO AI-DLC & SPEC-DRIVEN DEVELOPMENT (SDD)!");
   console.log("=================================================================================");
-  console.log("Hemos detectado que es la primera vez que ejecutas 'feature-start' en este equipo.");
-  console.log("Vamos a configurar tus accesos una sola vez para que todo funcione sin fricción.\n");
+  console.log("Hemos detectado que faltan configuraciones o es la primera vez que ejecutas 'feature-start'.");
+  console.log("Vamos a configurar tus accesos de forma guiada para que todo funcione sin fricción.\n");
 
   const rl = readline.createInterface({ input, output });
 
   try {
     // 1. Directorio base de proyectos
-    if (!process.env.PROJECTS_BASE_DIR) {
+    if (isPlaceholderOrEmpty(process.env.PROJECTS_BASE_DIR)) {
       const defaultProjects = path.join(os.homedir(), 'Documents', 'GitHub');
       console.log("📁 1. Directorio local donde clonas tus repositorios Git:");
       console.log(`   (Donde tienes tus carpetas de proyectos; sugerido: ${defaultProjects})`);
@@ -71,57 +81,63 @@ async function runInteractiveOnboarding() {
     }
 
     // 2. Jira Base URL
-    if (!process.env.JIRA_URL) {
+    if (isPlaceholderOrEmpty(process.env.JIRA_URL)) {
       console.log("🌐 2. URL de tu instancia Jira (Atlassian):");
-      console.log("   (Ejemplo: https://tu-organizacion.atlassian.net)");
-      while (!process.env.JIRA_URL) {
+      console.log("   (Ejemplo: https://mi-organizacion.atlassian.net)");
+      while (isPlaceholderOrEmpty(process.env.JIRA_URL)) {
         const jAns = await rl.question("👉 URL de Jira: ");
         if (jAns.trim()) process.env.JIRA_URL = jAns.trim().replace(/\/+$/, '');
       }
       console.log(`   ✔ Jira URL: ${process.env.JIRA_URL}\n`);
     }
 
-    if (!process.env.CONFLUENCE_URL && process.env.JIRA_URL) {
-      process.env.CONFLUENCE_URL = `${process.env.JIRA_URL}/wiki`;
+    // 3. Confluence URL
+    if (isPlaceholderOrEmpty(process.env.CONFLUENCE_URL)) {
+      const defaultConfluence = `${process.env.JIRA_URL}/wiki`;
+      console.log("📚 3. URL de Confluence (Atlassian Wiki):");
+      console.log(`   (Sugerido por defecto: ${defaultConfluence})`);
+      const cAns = await rl.question(`👉 URL de Confluence [Enter = ${defaultConfluence}]: `);
+      process.env.CONFLUENCE_URL = (cAns.trim() || defaultConfluence).replace(/\/+$/, '');
+      console.log(`   ✔ Confluence URL: ${process.env.CONFLUENCE_URL}\n`);
     }
 
-    // 3. Jira Username
-    if (!process.env.JIRA_USERNAME) {
-      console.log("📧 3. Correo de tu cuenta Atlassian (Jira / Confluence):");
-      console.log("   (Ejemplo: tu-nombre@empresa.com)");
-      while (!process.env.JIRA_USERNAME) {
+    // 4. Jira Username
+    if (isPlaceholderOrEmpty(process.env.JIRA_USERNAME)) {
+      console.log("📧 4. Correo de tu cuenta Atlassian (Jira / Confluence):");
+      console.log("   (Ejemplo: nombre.apellido@empresa.com)");
+      while (isPlaceholderOrEmpty(process.env.JIRA_USERNAME)) {
         const uAns = await rl.question("👉 Correo corporativo: ");
         if (uAns.trim()) process.env.JIRA_USERNAME = uAns.trim();
       }
       console.log(`   ✔ Usuario: ${process.env.JIRA_USERNAME}\n`);
     }
 
-    // 4. Jira API Token
-    if (!process.env.JIRA_API_TOKEN) {
-      console.log("🔑 4. API Token de Atlassian:");
+    // 5. Jira API Token
+    if (isPlaceholderOrEmpty(process.env.JIRA_API_TOKEN)) {
+      console.log("🔑 5. API Token de Atlassian:");
       console.log("   Puedes crearlo en: https://id.atlassian.com/manage-profile/security/api-tokens");
       console.log("   (Crea un token con nombre 'aidlc-cli' y cópialo aquí)");
-      while (!process.env.JIRA_API_TOKEN) {
+      while (isPlaceholderOrEmpty(process.env.JIRA_API_TOKEN)) {
         const tokAns = await rl.question("👉 Token de Jira: ");
         if (tokAns.trim()) process.env.JIRA_API_TOKEN = tokAns.trim();
       }
       console.log("   ✔ Token de Jira registrado.\n");
     }
 
-    // 5. Gemini API Key
-    if (!process.env.GEMINI_API_KEY) {
-      console.log("🤖 5. Google Gemini API Key (para la síntesis del plan SDD):");
+    // 6. Gemini API Key
+    if (isPlaceholderOrEmpty(process.env.GEMINI_API_KEY)) {
+      console.log("🤖 6. Google Gemini API Key (para la síntesis del plan SDD):");
       console.log("   Puedes obtener tu API Key en: https://aistudio.google.com/app/apikey");
-      while (!process.env.GEMINI_API_KEY) {
+      while (isPlaceholderOrEmpty(process.env.GEMINI_API_KEY)) {
         const gAns = await rl.question("👉 Gemini API Key: ");
         if (gAns.trim()) process.env.GEMINI_API_KEY = gAns.trim();
       }
       console.log("   ✔ API Key de Gemini registrada.\n");
     }
 
-    // 6. Figma Access Token (Opcional)
-    if (!process.env.FIGMA_ACCESS_TOKEN) {
-      console.log("🎨 6. Figma Personal Access Token (Opcional):");
+    // 7. Figma Access Token (Opcional)
+    if (isPlaceholderOrEmpty(process.env.FIGMA_ACCESS_TOKEN)) {
+      console.log("🎨 7. Figma Personal Access Token (Opcional):");
       console.log("   Si el ticket tiene mockups en Figma, descargará componentes automáticamente.");
       console.log("   Generable en: Figma -> Configuración de cuenta -> Personal access tokens");
       const fAns = await rl.question("👉 Token de Figma (o presiona Enter para omitir): ");
@@ -143,6 +159,8 @@ async function runInteractiveOnboarding() {
       `CONFLUENCE_URL="${process.env.CONFLUENCE_URL}"`,
       `JIRA_USERNAME="${process.env.JIRA_USERNAME}"`,
       `JIRA_API_TOKEN="${process.env.JIRA_API_TOKEN}"`,
+      `CONFLUENCE_USERNAME="${process.env.JIRA_USERNAME}"`,
+      `CONFLUENCE_API_TOKEN="${process.env.JIRA_API_TOKEN}"`,
       `GEMINI_API_KEY="${process.env.GEMINI_API_KEY}"`,
       process.env.FIGMA_ACCESS_TOKEN ? `FIGMA_ACCESS_TOKEN="${process.env.FIGMA_ACCESS_TOKEN}"` : '',
     ].filter(Boolean).join('\n') + '\n';

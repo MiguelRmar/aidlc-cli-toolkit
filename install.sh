@@ -69,15 +69,13 @@ CONFIG_DIR="$HOME/.config/aidlc"
 mkdir -p "$CONFIG_DIR"
 CONFIG_FILE="$CONFIG_DIR/config.env"
 
-if [ ! -f "$CONFIG_FILE" ]; then
-  if [ -f "$SCRIPT_DIR/templates/config.env.example" ]; then
-    cp "$SCRIPT_DIR/templates/config.env.example" "$CONFIG_FILE"
-    chmod 600 "$CONFIG_FILE"
-    echo -e "\n${YELLOW}ℹ️  Se ha inicializado una plantilla de configuración en:${RESET} $CONFIG_FILE"
-    echo "   (La primera vez que ejecutes 'feature-start' se iniciará un asistente interactivo para configurarla)."
-  fi
+if [ -f "$CONFIG_FILE" ]; then
+  echo -e "\n${GREEN}✔ Archivo de configuración detectado en:${RESET} $CONFIG_FILE"
 else
-  echo -e "\n${GREEN}✔ Archivo de configuración existente detectado en:${RESET} $CONFIG_FILE"
+  echo -e "\n${YELLOW}ℹ️  Configuración inicial:${RESET}"
+  echo "   La primera vez que ejecutes 'feature-start', se iniciará un asistente interactivo"
+  echo "   para solicitar tu URL de Jira, correo, tokens y directorio de repositorios."
+  echo "   (También puedes configurar manualmente creando ~/.config/aidlc/config.env desde templates/config.env.example)."
 fi
 
 # 5. Validar si ~/.local/bin está en el PATH

@@ -22,17 +22,23 @@ if (fs.existsSync(CONFIG_FILE)) {
   } catch {}
 }
 
+function isPlaceholder(val) {
+  if (!val || typeof val !== 'string' || !val.trim()) return true;
+  const lower = val.toLowerCase().trim();
+  return ['tu-dominio', 'tu-organizacion', 'tu-empresa', 'tu-correo'].some(p => lower.includes(p));
+}
+
 const username = process.env.CONFLUENCE_USERNAME || process.env.JIRA_USERNAME || process.env.ATLASSIAN_USERNAME;
 const token = process.env.CONFLUENCE_API_TOKEN || process.env.JIRA_API_TOKEN || process.env.ATLASSIAN_API_KEY;
 const rawUrl = process.env.CONFLUENCE_URL || (process.env.JIRA_URL ? `${process.env.JIRA_URL}/wiki` : '');
 
-if (!rawUrl) {
-  console.error("❌ Falta configurar CONFLUENCE_URL en ~/.config/aidlc/config.env.");
+if (!rawUrl || isPlaceholder(rawUrl)) {
+  console.error("❌ Falta configurar CONFLUENCE_URL o tiene un valor de plantilla.\n👉 Ejecuta 'feature-start' para configurar tus credenciales interactivamente o edita ~/.config/aidlc/config.env");
   process.exit(1);
 }
 
-if (!username || !token) {
-  console.error("Error: Faltan credenciales JIRA_USERNAME o JIRA_API_TOKEN.");
+if (!username || !token || isPlaceholder(username)) {
+  console.error("❌ Faltan credenciales válidas (CONFLUENCE_USERNAME o CONFLUENCE_API_TOKEN).\n👉 Ejecuta 'feature-start' para configurar tus credenciales interactivamente o edita ~/.config/aidlc/config.env");
   process.exit(1);
 }
 
