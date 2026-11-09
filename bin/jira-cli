@@ -87,7 +87,13 @@ function jiraRequest(method, apiPath, bodyObj = null) {
             resolve({});
           }
         } else {
-          reject(new Error(`Jira HTTP ${res.statusCode}: ${raw.slice(0, 200)}`));
+          let hint = '';
+          if (res.statusCode === 404 && raw.includes('Site temporarily unavailable')) {
+            hint = `\n\n💡 Sugerencia: La URL '${JIRA_BASE_URL}' no existe en Atlassian.\n   Verifica y corrige la variable 'JIRA_URL' en tu archivo: ~/.config/aidlc/config.env`;
+          } else if (res.statusCode === 401) {
+            hint = `\n\n💡 Sugerencia: Credenciales inválidas para ${JIRA_USERNAME}.\n   Verifica tu JIRA_API_TOKEN en: ~/.config/aidlc/config.env`;
+          }
+          reject(new Error(`Jira HTTP ${res.statusCode}: ${raw.slice(0, 200)}${hint}`));
         }
       });
     });
