@@ -615,42 +615,47 @@ async function findRepositoriesInteractively(projectsBaseDirs, currentGitRoot, h
   }
 
   const allLocal = getLocalGitRepos(projectsBaseDirs);
+  const accumulatedPaths = [];
   const rl = readline.createInterface({ input, output });
 
   try {
     while (true) {
-      if (currentGitRoot) {
+      if (accumulatedPaths.length > 0) {
+        console.log(`\n📌 Componentes seleccionados hasta ahora: ${accumulatedPaths.map(p => path.basename(p)).join(', ')}`);
+      } else if (currentGitRoot) {
         console.log(`\n📂 Repositorio actual detectado: ${path.basename(currentGitRoot)}`);
       }
-      const promptHint = currentGitRoot
-        ? `🔍 Escribe parte del nombre del repo (ej: 'liveness') [Enter = usar '${path.basename(currentGitRoot)}']: `
-        : `🔍 Escribe parte del nombre del repo para buscar en local y GitHub (ej: 'liveness') [Enter = listar locales]: `;
+
+      const promptHint = (currentGitRoot && accumulatedPaths.length === 0)
+        ? `🔍 Escribe parte del nombre (ej: 'liveness', o '*' para listar todos) [Enter = usar '${path.basename(currentGitRoot)}']: `
+        : `🔍 Escribe parte del nombre del repo para buscar en local y GitHub (ej: 'liveness') [Enter = listar todos locales]: `;
 
       const query = (await rl.question(promptHint)).trim();
 
-      if (!query && currentGitRoot) {
+      if (!query && currentGitRoot && accumulatedPaths.length === 0) {
         return [currentGitRoot];
       }
 
-      const qLower = query.toLowerCase();
+      const listAll = !query || ['*', 'all', 'todos'].includes(query.toLowerCase());
+      const qLower = listAll ? '' : query.toLowerCase();
       const matches = allLocal.filter(r => !qLower || r.relativePath.toLowerCase().includes(qLower) || r.name.toLowerCase().includes(qLower));
 
       let ghMatches = [];
-      if (query.length >= 2) {
+      if (!listAll && query.length >= 2) {
         console.log(`  🔎 Buscando '${query}' en local y en tus organizaciones de GitHub...`);
         ghMatches = searchGitHubRepos(query);
       }
 
       const localNames = new Set(matches.map(m => m.name.toLowerCase()));
       const remoteOnly = ghMatches.filter(g => !localNames.has(g.name.toLowerCase()));
-      const combined = [...matches.slice(0, 20), ...remoteOnly.slice(0, 10)];
+      const combined = listAll ? matches : [...matches, ...remoteOnly.slice(0, 15)];
 
       if (combined.length === 0) {
         console.log(`  ⚠️  No se encontraron repositorios que coincidan con '${query}'. Intenta con otra palabra clave.`);
         continue;
       }
 
-      console.log(`\n📦 Repositorios encontrados${query ? ` para '${query}'` : ''}:`);
+      console.log(`\n📦 Repositorios encontrados${!listAll ? ` para '${query}'` : ` (${combined.length} locales)`}:`);
       combined.forEach((repo, i) => {
         if (repo.source === 'local') {
           console.log(`  [${i + 1}] 📁 [Local]  ${repo.relativePath}`);
@@ -673,24 +678,28 @@ async function findRepositoriesInteractively(projectsBaseDirs, currentGitRoot, h
         continue;
       }
 
-      const chosenPaths = [];
       for (const idx of indices) {
         const item = combined[idx];
         if (item.source === 'local') {
-          chosenPaths.push(item.path);
+          if (!accumulatedPaths.includes(item.path)) accumulatedPaths.push(item.path);
         } else {
           const destPath = path.join(cloneTargetBase, item.name);
           console.log(`\n==> 📥 Clonando ${item.fullName} en ${destPath}...`);
           const cloneRes = runCli('gh', ['repo', 'clone', item.fullName, destPath], { stdio: 'inherit' });
           if (cloneRes.status === 0 && fs.existsSync(destPath)) {
-            chosenPaths.push(destPath);
+            if (!accumulatedPaths.includes(destPath)) accumulatedPaths.push(destPath);
           } else {
             console.error(`  ❌ No se pudo clonar ${item.fullName}.`);
           }
         }
       }
 
-      if (chosenPaths.length > 0) return chosenPaths;
+      if (accumulatedPaths.length > 0) {
+        const moreAns = (await rl.question(`\n✅ Llevas ${accumulatedPaths.length} componente(s) (${accumulatedPaths.map(p => path.basename(p)).join(', ')}). ¿Deseas buscar y agregar otro diferente? [s/N]: `)).trim().toLowerCase();
+        if (!['s', 'si', 'y', 'yes'].includes(moreAns)) {
+          return accumulatedPaths;
+        }
+      }
     }
   } finally {
     rl.close();
