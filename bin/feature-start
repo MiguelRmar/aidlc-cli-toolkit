@@ -621,16 +621,22 @@ async function findRepositoriesInteractively(projectsBaseDirs, currentGitRoot, h
   try {
     while (true) {
       if (accumulatedPaths.length > 0) {
-        console.log(`\n📌 Componentes seleccionados hasta ahora: ${accumulatedPaths.map(p => path.basename(p)).join(', ')}`);
+        console.log(`\n📌 Componentes seleccionados (${accumulatedPaths.length}): ${accumulatedPaths.map(p => path.basename(p)).join(', ')}`);
       } else if (currentGitRoot) {
         console.log(`\n📂 Repositorio actual detectado: ${path.basename(currentGitRoot)}`);
       }
 
-      const promptHint = (currentGitRoot && accumulatedPaths.length === 0)
-        ? `🔍 Escribe parte del nombre (ej: 'liveness', o '*' para listar todos) [Enter = usar '${path.basename(currentGitRoot)}']: `
-        : `🔍 Escribe parte del nombre del repo para buscar en local y GitHub (ej: 'liveness') [Enter = listar todos locales]: `;
+      const promptHint = accumulatedPaths.length > 0
+        ? `🔍 Escribe otro nombre para buscar y agregar (o '*' para ver todos) [Enter = continuar con estos ${accumulatedPaths.length}]: `
+        : (currentGitRoot
+          ? `🔍 Escribe parte del nombre (ej: 'host', o '*' para listar todos) [Enter = usar '${path.basename(currentGitRoot)}']: `
+          : `🔍 Escribe parte del nombre del repo para buscar en local y GitHub (ej: 'host') [Enter = listar todos locales]: `);
 
       const query = (await rl.question(promptHint)).trim();
+
+      if (!query && accumulatedPaths.length > 0) {
+        return accumulatedPaths;
+      }
 
       if (!query && currentGitRoot && accumulatedPaths.length === 0) {
         return [currentGitRoot];
@@ -665,7 +671,7 @@ async function findRepositoriesInteractively(projectsBaseDirs, currentGitRoot, h
       });
       console.log(`  [0] 🔄 Buscar otro nombre`);
 
-      const selAns = (await rl.question("\n👉 Selecciona el número (puedes elegir varios separados por coma, ej: 1,2): ")).trim();
+      const selAns = (await rl.question("\n👉 Selecciona el número (puedes elegir varios separados por coma, ej: 1, 2): ")).trim();
       if (selAns === '0' || !selAns) continue;
 
       const indices = selAns
@@ -691,13 +697,6 @@ async function findRepositoriesInteractively(projectsBaseDirs, currentGitRoot, h
           } else {
             console.error(`  ❌ No se pudo clonar ${item.fullName}.`);
           }
-        }
-      }
-
-      if (accumulatedPaths.length > 0) {
-        const moreAns = (await rl.question(`\n✅ Llevas ${accumulatedPaths.length} componente(s) (${accumulatedPaths.map(p => path.basename(p)).join(', ')}). ¿Deseas buscar y agregar otro diferente? [s/N]: `)).trim().toLowerCase();
-        if (!['s', 'si', 'y', 'yes'].includes(moreAns)) {
-          return accumulatedPaths;
         }
       }
     }
