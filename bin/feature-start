@@ -495,6 +495,163 @@ async function selectTicketInteractively() {
   return answer.toUpperCase();
 }
 
+function getLocalGitRepos(projectsBaseDir) {
+  const results = [];
+  try {
+    const entries = fs.readdirSync(projectsBaseDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        const fullPath = path.join(projectsBaseDir, entry.name);
+        if (fs.existsSync(path.join(fullPath, '.git'))) {
+          results.push({ name: entry.name, path: fullPath, source: 'local' });
+        }
+      }
+    }
+  } catch {}
+  return results.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function searchGitHubRepos(keyword) {
+  const ghRepos = [];
+  if (!keyword || keyword.length < 2) return ghRepos;
+
+  const userRes = runCli('gh', ['api', 'user', '--jq', '.login'], { timeout: 4000 });
+  if (userRes.status !== 0 || !userRes.stdout.trim()) return ghRepos;
+
+  const owners = [userRes.stdout.trim()];
+  const orgsRes = runCli('gh', ['api', 'user/orgs', '--jq', '.[].login'], { timeout: 4000 });
+  if (orgsRes.status === 0 && orgsRes.stdout.trim()) {
+    orgsRes.stdout.trim().split('\n').forEach(o => {
+      if (o.trim()) owners.push(o.trim());
+    });
+  }
+
+  const ownerArgs = [];
+  for (const o of owners) {
+    ownerArgs.push('--owner', o);
+  }
+
+  const searchRes = runCli('gh', [
+    'search', 'repos', keyword,
+    ...ownerArgs,
+    '--limit', '15',
+    '--json', 'fullName,name,url'
+  ], { timeout: 8000 });
+
+  if (searchRes.status === 0 && searchRes.stdout.trim()) {
+    try {
+      const parsed = JSON.parse(searchRes.stdout);
+      if (Array.isArray(parsed)) {
+        for (const r of parsed) {
+          ghRepos.push({
+            name: r.name,
+            fullName: r.fullName,
+            url: r.url,
+            source: 'github'
+          });
+        }
+      }
+    } catch {}
+  }
+  return ghRepos;
+}
+
+async function findRepositoriesInteractively(projectsBaseDir, currentGitRoot, hasComponentsInJira) {
+  if (!hasComponentsInJira) {
+    console.log("\n=================================================================================");
+    console.log("⚠️  ALERTA: Esta Historia de Usuario en Jira NO tiene 'Components' asignados.");
+    console.log("💡 Tip: Agrega el componente en Jira para futuras ejecuciones, o búscalo aquí.");
+    console.log("=================================================================================");
+  } else {
+    console.log("\n=================================================================================");
+    console.log("⚠️  No se encontraron localmente los componentes definidos en Jira.");
+    console.log("💡 Puedes buscar el repositorio manualmente en tu carpeta local o en GitHub.");
+    console.log("=================================================================================");
+  }
+
+  const allLocal = getLocalGitRepos(projectsBaseDir);
+  const rl = readline.createInterface({ input, output });
+
+  try {
+    while (true) {
+      if (currentGitRoot) {
+        console.log(`\n📂 Repositorio actual detectado: ${path.basename(currentGitRoot)}`);
+      }
+      const promptHint = currentGitRoot
+        ? `🔍 Escribe parte del nombre del repo (ej: 'liveness') [Enter = usar '${path.basename(currentGitRoot)}']: `
+        : `🔍 Escribe parte del nombre del repo para buscar en local y GitHub (ej: 'liveness') [Enter = listar locales]: `;
+
+      const query = (await rl.question(promptHint)).trim();
+
+      if (!query && currentGitRoot) {
+        return [currentGitRoot];
+      }
+
+      const qLower = query.toLowerCase();
+      const matches = allLocal.filter(r => !qLower || r.name.toLowerCase().includes(qLower));
+
+      let ghMatches = [];
+      if (query.length >= 2) {
+        console.log(`  🔎 Buscando '${query}' en local y en tus organizaciones de GitHub...`);
+        ghMatches = searchGitHubRepos(query);
+      }
+
+      const localNames = new Set(matches.map(m => m.name.toLowerCase()));
+      const remoteOnly = ghMatches.filter(g => !localNames.has(g.name.toLowerCase()));
+      const combined = [...matches.slice(0, 20), ...remoteOnly.slice(0, 10)];
+
+      if (combined.length === 0) {
+        console.log(`  ⚠️  No se encontraron repositorios que coincidan con '${query}'. Intenta con otra palabra clave.`);
+        continue;
+      }
+
+      console.log(`\n📦 Repositorios encontrados${query ? ` para '${query}'` : ''}:`);
+      combined.forEach((repo, i) => {
+        if (repo.source === 'local') {
+          console.log(`  [${i + 1}] 📁 [Local]  ${repo.name}`);
+        } else {
+          console.log(`  [${i + 1}] ☁️  [GitHub] ${repo.fullName} (se clonará en ${projectsBaseDir})`);
+        }
+      });
+      console.log(`  [0] 🔄 Buscar otro nombre`);
+
+      const selAns = (await rl.question("\n👉 Selecciona el número (puedes elegir varios separados por coma, ej: 1,2): ")).trim();
+      if (selAns === '0' || !selAns) continue;
+
+      const indices = selAns
+        .split(',')
+        .map(s => parseInt(s.trim(), 10) - 1)
+        .filter(idx => idx >= 0 && idx < combined.length);
+
+      if (indices.length === 0) {
+        console.log("  ⚠️  Selección inválida. Intenta de nuevo.");
+        continue;
+      }
+
+      const chosenPaths = [];
+      for (const idx of indices) {
+        const item = combined[idx];
+        if (item.source === 'local') {
+          chosenPaths.push(item.path);
+        } else {
+          const destPath = path.join(projectsBaseDir, item.name);
+          console.log(`\n==> 📥 Clonando ${item.fullName} en ${destPath}...`);
+          const cloneRes = runCli('gh', ['repo', 'clone', item.fullName, destPath], { stdio: 'inherit' });
+          if (cloneRes.status === 0 && fs.existsSync(destPath)) {
+            chosenPaths.push(destPath);
+          } else {
+            console.error(`  ❌ No se pudo clonar ${item.fullName}.`);
+          }
+        }
+      }
+
+      if (chosenPaths.length > 0) return chosenPaths;
+    }
+  } finally {
+    rl.close();
+  }
+}
+
 // ============================================================================
 // FLUJO PRINCIPAL
 // ============================================================================
@@ -573,16 +730,14 @@ async function main() {
   }
 
   if (targetRepos.length === 0) {
-    const gitRoot = runCli('git', ['rev-parse', '--show-toplevel']);
-    if (gitRoot.status === 0 && gitRoot.stdout.trim()) {
-      const currentRepo = gitRoot.stdout.trim();
-      console.log(`==> 📂 Usando el repositorio Git actual: ${currentRepo}`);
-      targetRepos.push(currentRepo);
-    }
+    const gitRootRes = runCli('git', ['rev-parse', '--show-toplevel']);
+    const currentGitRoot = (gitRootRes.status === 0 && gitRootRes.stdout.trim()) ? gitRootRes.stdout.trim() : '';
+    const selectedRepos = await findRepositoriesInteractively(CONFIG.projectsBaseDir, currentGitRoot, components.length > 0);
+    targetRepos.push(...selectedRepos);
   }
 
   if (targetRepos.length === 0) {
-    console.error(`❌ No se encontró ningún repositorio local en ${CONFIG.projectsBaseDir} ni en el directorio actual.`);
+    console.error(`❌ No se seleccionó ningún repositorio válido.`);
     process.exit(1);
   }
 
