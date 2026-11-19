@@ -142,6 +142,10 @@ GEMINI_API_KEY="tu-gemini-api-key"
 
 # Figma (Opcional - para extracción de mockups)
 FIGMA_ACCESS_TOKEN="tu-figma-token"
+
+# Editor preferido al finalizar feature-start (Opcional):
+# Valores: "antigravity", "vscode", "cursor", "kiro", "kiro-cli"
+PREFERRED_EDITOR="antigravity"
 ```
 
 ---
