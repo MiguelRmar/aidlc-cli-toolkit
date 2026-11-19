@@ -70,17 +70,20 @@ async function runInteractiveOnboarding() {
   const rl = readline.createInterface({ input, output });
 
   try {
-    // 1. Directorio base de proyectos
+    // 1. Directorio(s) base de proyectos
     if (isPlaceholderOrEmpty(process.env.PROJECTS_BASE_DIR)) {
       const defaultProjects = path.join(os.homedir(), 'Documents', 'GitHub');
-      console.log("📁 1. Directorio local donde clonas tus repositorios Git:");
-      console.log(`   (Donde tienes tus carpetas de proyectos; sugerido: ${defaultProjects})`);
-      const dirAnswer = await rl.question(`👉 Ingresa la ruta de tus repositorios [Enter = ${defaultProjects}]: `);
-      let chosenPath = dirAnswer.trim() || defaultProjects;
-      if (chosenPath.startsWith('~/')) {
-        chosenPath = path.join(os.homedir(), chosenPath.slice(2));
-      }
-      process.env.PROJECTS_BASE_DIR = path.resolve(chosenPath);
+      console.log("📁 1. Carpeta(s) donde guardas tus repositorios Git:");
+      console.log(`   (Busca automáticamente en subcarpetas como backend/, frontend/, etc.)`);
+      console.log(`   (También puedes poner varias rutas separadas por coma. Sugerido: ${defaultProjects})`);
+      const dirAnswer = await rl.question(`👉 Ingresa la(s) ruta(s) [Enter = ${defaultProjects}]: `);
+      const rawPaths = (dirAnswer.trim() || defaultProjects)
+        .split(/[,;]+/)
+        .map(p => p.trim())
+        .filter(Boolean)
+        .map(p => (p.startsWith('~/') ? path.join(os.homedir(), p.slice(2)) : p))
+        .map(p => path.resolve(p));
+      process.env.PROJECTS_BASE_DIR = rawPaths.join(',');
       console.log(`   ✔ Repositorios configurados en: ${process.env.PROJECTS_BASE_DIR}\n`);
     }
 
@@ -202,8 +205,17 @@ async function runInteractiveOnboarding() {
 // CONFIGURACIÓN DINÁMICA
 // ============================================================================
 const CONFIG = {
+  get projectsBaseDirs() {
+    const raw = process.env.PROJECTS_BASE_DIR || path.join(os.homedir(), 'Documents', 'GitHub');
+    return raw
+      .split(/[,;]+/)
+      .map(p => p.trim())
+      .filter(Boolean)
+      .map(p => (p.startsWith('~/') ? path.join(os.homedir(), p.slice(2)) : p))
+      .map(p => path.resolve(p));
+  },
   get projectsBaseDir() {
-    return process.env.PROJECTS_BASE_DIR || path.join(os.homedir(), 'Documents', 'GitHub');
+    return this.projectsBaseDirs[0];
   },
   quotaRegex: /exceeded your monthly quota|rate limit|AI Credits 0|429|unauthorized|error:/i,
   bufferLimit: 50 * 1024 * 1024,
@@ -495,20 +507,52 @@ async function selectTicketInteractively() {
   return answer.toUpperCase();
 }
 
-function getLocalGitRepos(projectsBaseDir) {
+function getLocalGitRepos(projectsBaseDirs) {
+  const dirs = Array.isArray(projectsBaseDirs) ? projectsBaseDirs : [projectsBaseDirs];
   const results = [];
-  try {
-    const entries = fs.readdirSync(projectsBaseDir, { withFileTypes: true });
+  const seenPaths = new Set();
+  const IGNORED_DIRS = new Set(['node_modules', 'dist', 'build', 'target', 'coverage', 'vendor', '.git', '.kiro']);
+
+  function scanDir(rootDir, currentDir, depth) {
+    if (depth > 3) return;
+    let entries = [];
+    try {
+      entries = fs.readdirSync(currentDir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+
     for (const entry of entries) {
-      if (entry.isDirectory()) {
-        const fullPath = path.join(projectsBaseDir, entry.name);
-        if (fs.existsSync(path.join(fullPath, '.git'))) {
-          results.push({ name: entry.name, path: fullPath, source: 'local' });
+      if (!entry.isDirectory()) continue;
+      if (entry.name.startsWith('.') || IGNORED_DIRS.has(entry.name)) continue;
+
+      const fullPath = path.join(currentDir, entry.name);
+      if (fs.existsSync(path.join(fullPath, '.git'))) {
+        if (!seenPaths.has(fullPath)) {
+          seenPaths.add(fullPath);
+          const rel = path.relative(rootDir, fullPath) || entry.name;
+          results.push({ name: entry.name, relativePath: rel, path: fullPath, source: 'local' });
         }
+      } else {
+        scanDir(rootDir, fullPath, depth + 1);
       }
     }
-  } catch {}
-  return results.sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  for (const base of dirs) {
+    if (!fs.existsSync(base)) continue;
+    // Si el directorio base en sí es un repo Git
+    if (fs.existsSync(path.join(base, '.git'))) {
+      if (!seenPaths.has(base)) {
+        seenPaths.add(base);
+        results.push({ name: path.basename(base), relativePath: path.basename(base), path: base, source: 'local' });
+      }
+    } else {
+      scanDir(base, base, 1);
+    }
+  }
+
+  return results.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
 }
 
 function searchGitHubRepos(keyword) {
@@ -556,7 +600,8 @@ function searchGitHubRepos(keyword) {
   return ghRepos;
 }
 
-async function findRepositoriesInteractively(projectsBaseDir, currentGitRoot, hasComponentsInJira) {
+async function findRepositoriesInteractively(projectsBaseDirs, currentGitRoot, hasComponentsInJira) {
+  const cloneTargetBase = Array.isArray(projectsBaseDirs) ? projectsBaseDirs[0] : projectsBaseDirs;
   if (!hasComponentsInJira) {
     console.log("\n=================================================================================");
     console.log("⚠️  ALERTA: Esta Historia de Usuario en Jira NO tiene 'Components' asignados.");
@@ -565,11 +610,11 @@ async function findRepositoriesInteractively(projectsBaseDir, currentGitRoot, ha
   } else {
     console.log("\n=================================================================================");
     console.log("⚠️  No se encontraron localmente los componentes definidos en Jira.");
-    console.log("💡 Puedes buscar el repositorio manualmente en tu carpeta local o en GitHub.");
+    console.log("💡 Puedes buscar el repositorio manualmente en tus carpetas locales o en GitHub.");
     console.log("=================================================================================");
   }
 
-  const allLocal = getLocalGitRepos(projectsBaseDir);
+  const allLocal = getLocalGitRepos(projectsBaseDirs);
   const rl = readline.createInterface({ input, output });
 
   try {
@@ -588,7 +633,7 @@ async function findRepositoriesInteractively(projectsBaseDir, currentGitRoot, ha
       }
 
       const qLower = query.toLowerCase();
-      const matches = allLocal.filter(r => !qLower || r.name.toLowerCase().includes(qLower));
+      const matches = allLocal.filter(r => !qLower || r.relativePath.toLowerCase().includes(qLower) || r.name.toLowerCase().includes(qLower));
 
       let ghMatches = [];
       if (query.length >= 2) {
@@ -608,9 +653,9 @@ async function findRepositoriesInteractively(projectsBaseDir, currentGitRoot, ha
       console.log(`\n📦 Repositorios encontrados${query ? ` para '${query}'` : ''}:`);
       combined.forEach((repo, i) => {
         if (repo.source === 'local') {
-          console.log(`  [${i + 1}] 📁 [Local]  ${repo.name}`);
+          console.log(`  [${i + 1}] 📁 [Local]  ${repo.relativePath}`);
         } else {
-          console.log(`  [${i + 1}] ☁️  [GitHub] ${repo.fullName} (se clonará en ${projectsBaseDir})`);
+          console.log(`  [${i + 1}] ☁️  [GitHub] ${repo.fullName} (se clonará en ${cloneTargetBase})`);
         }
       });
       console.log(`  [0] 🔄 Buscar otro nombre`);
@@ -634,7 +679,7 @@ async function findRepositoriesInteractively(projectsBaseDir, currentGitRoot, ha
         if (item.source === 'local') {
           chosenPaths.push(item.path);
         } else {
-          const destPath = path.join(projectsBaseDir, item.name);
+          const destPath = path.join(cloneTargetBase, item.name);
           console.log(`\n==> 📥 Clonando ${item.fullName} en ${destPath}...`);
           const cloneRes = runCli('gh', ['repo', 'clone', item.fullName, destPath], { stdio: 'inherit' });
           if (cloneRes.status === 0 && fs.existsSync(destPath)) {
@@ -699,32 +744,24 @@ async function main() {
   const slug = taskTitle.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 35);
   const branchName = slug ? `feature/${ticket}-${slug}` : `feature/${ticket}`;
 
-  // Localizar repositorios locales con normalización inteligente
+  // Localizar repositorios locales (soporta carpetas anidadas y múltiples rutas base)
   const targetRepos = [];
   if (components.length > 0) {
-    let availableDirs = [];
-    try {
-      availableDirs = fs.readdirSync(CONFIG.projectsBaseDir);
-    } catch {}
+    const allLocalRepos = getLocalGitRepos(CONFIG.projectsBaseDirs);
 
     for (const comp of components) {
-      let repoPath = path.join(CONFIG.projectsBaseDir, comp);
-      if (!fs.existsSync(repoPath) || !fs.existsSync(path.join(repoPath, '.git'))) {
-        const compSlug = comp.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
-        const matchedDir = availableDirs.find(d => {
-          const dirSlug = d.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
-          return dirSlug === compSlug || dirSlug.includes(compSlug);
-        });
-        if (matchedDir) {
-          repoPath = path.join(CONFIG.projectsBaseDir, matchedDir);
-        }
-      }
+      const compSlug = comp.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+      const exactMatch = allLocalRepos.find(r => r.name.toLowerCase() === comp.toLowerCase());
+      const slugMatch = exactMatch || allLocalRepos.find(r => {
+        const dirSlug = r.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+        return dirSlug === compSlug || dirSlug.includes(compSlug);
+      });
 
-      if (fs.existsSync(repoPath) && fs.existsSync(path.join(repoPath, '.git'))) {
-        console.log(`  ✔ Repositorio encontrado: ${repoPath}`);
-        targetRepos.push(repoPath);
-      } else {
-        console.log(`  ⚠️ No se encontró el proyecto '${comp}' en ${CONFIG.projectsBaseDir}`);
+      if (slugMatch && !targetRepos.includes(slugMatch.path)) {
+        console.log(`  ✔ Repositorio encontrado: ${slugMatch.path}`);
+        targetRepos.push(slugMatch.path);
+      } else if (!slugMatch) {
+        console.log(`  ⚠️ No se encontró el proyecto '${comp}' en tus carpetas configuradas.`);
       }
     }
   }
@@ -732,7 +769,7 @@ async function main() {
   if (targetRepos.length === 0) {
     const gitRootRes = runCli('git', ['rev-parse', '--show-toplevel']);
     const currentGitRoot = (gitRootRes.status === 0 && gitRootRes.stdout.trim()) ? gitRootRes.stdout.trim() : '';
-    const selectedRepos = await findRepositoriesInteractively(CONFIG.projectsBaseDir, currentGitRoot, components.length > 0);
+    const selectedRepos = await findRepositoriesInteractively(CONFIG.projectsBaseDirs, currentGitRoot, components.length > 0);
     targetRepos.push(...selectedRepos);
   }
 
