@@ -106,7 +106,10 @@ Simplemente ejecuta `feature-start` con cualquier ticket (por ejemplo `feature-s
 3. **📚 URL de Confluence (`CONFLUENCE_URL`):** La dirección de la wiki (se sugiere automáticamente `${JIRA_URL}/wiki`).
 4. **📧 Correo Atlassian (`JIRA_USERNAME`):** Tu correo electrónico con el que accedes a Jira/Confluence.
 5. **🔑 API Token de Atlassian (`JIRA_API_TOKEN`):** Tu token generado en [https://id.atlassian.com/manage-profile/security/api-tokens](https://id.atlassian.com/manage-profile/security/api-tokens).
-6. **🤖 Gemini API Key (`GEMINI_API_KEY`):** Tu clave gratuita obtenida en [https://aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey).
+6. **🤖 Motor de IA Preferido (`PREFERRED_AI_PROVIDER`):** Elige cómo generar el plan SDD según tu licencia:
+   - `gemini`: Google Gemini API (solicita tu `GEMINI_API_KEY` gratuita de AI Studio).
+   - `copilot`: GitHub Copilot CLI (usa tu licencia de Copilot sin necesidad de key de Gemini).
+   - `kiro`: Modo Local / Self-Bootstrap (no requiere APIs externas; ensambla el contexto desde Jira para que tu IDE lo complete).
 7. **🎨 Figma Token (`FIGMA_ACCESS_TOKEN`):** Opcional, para descargar componentes si tu ticket incluye mockups.
 
 El asistente guardará automáticamente tus datos en `~/.config/aidlc/config.env` con permisos restringidos de usuario (`chmod 600`).
@@ -158,9 +161,10 @@ Para comenzar a trabajar en cualquier requerimiento:
 feature-start PROJ-101
 ```
 
-O si deseas forzar la regeneración de contexto:
+O si deseas forzar la regeneración de contexto o elegir el motor de IA al vuelo:
 ```bash
 feature-start PROJ-101 --refresh
+feature-start PROJ-101 --ai=copilot   # Opciones: gemini, copilot, kiro
 ```
 
 ---

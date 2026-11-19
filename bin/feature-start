@@ -47,13 +47,17 @@ function isPlaceholderOrEmpty(val) {
 }
 
 async function runInteractiveOnboarding() {
+  const aiProvider = (process.env.PREFERRED_AI_PROVIDER || '').toLowerCase().trim();
+  const needsGeminiKey = (!aiProvider || aiProvider === 'gemini') && isPlaceholderOrEmpty(process.env.GEMINI_API_KEY);
+
   const needsConfig =
     isPlaceholderOrEmpty(process.env.PROJECTS_BASE_DIR) ||
     isPlaceholderOrEmpty(process.env.JIRA_URL) ||
     isPlaceholderOrEmpty(process.env.CONFLUENCE_URL) ||
     isPlaceholderOrEmpty(process.env.JIRA_USERNAME) ||
     isPlaceholderOrEmpty(process.env.JIRA_API_TOKEN) ||
-    isPlaceholderOrEmpty(process.env.GEMINI_API_KEY);
+    (!aiProvider && needsGeminiKey) ||
+    (aiProvider === 'gemini' && needsGeminiKey);
 
   if (!needsConfig) return;
 
@@ -124,9 +128,27 @@ async function runInteractiveOnboarding() {
       console.log("   ✔ Token de Jira registrado.\n");
     }
 
-    // 6. Gemini API Key
-    if (isPlaceholderOrEmpty(process.env.GEMINI_API_KEY)) {
-      console.log("🤖 6. Google Gemini API Key (para la síntesis del plan SDD):");
+    // 6. Motor de IA preferido para generar el plan SDD
+    if (!process.env.PREFERRED_AI_PROVIDER) {
+      console.log("🤖 6. Motor de IA para generar la especificación técnica (SDD):");
+      console.log("   1) ✨ Google Gemini API (Requiere API Key gratuita o de pago)");
+      console.log("   2) 🐙 GitHub Copilot CLI (Usa tu licencia de GitHub Copilot)");
+      console.log("   3) 🛡️  Kiro / IDE Local (Self-Bootstrap: sin APIs externas; tu IDE genera el plan)");
+      const aiAns = await rl.question("👉 Selecciona tu motor preferido [1/2/3, Enter = 1]: ");
+      const aiChoice = aiAns.trim().toLowerCase();
+      if (aiChoice === '2' || aiChoice === 'copilot') {
+        process.env.PREFERRED_AI_PROVIDER = 'copilot';
+      } else if (aiChoice === '3' || aiChoice === 'kiro' || aiChoice === 'local') {
+        process.env.PREFERRED_AI_PROVIDER = 'kiro';
+      } else {
+        process.env.PREFERRED_AI_PROVIDER = 'gemini';
+      }
+      console.log(`   ✔ Motor seleccionado: ${process.env.PREFERRED_AI_PROVIDER}\n`);
+    }
+
+    // 6b. Gemini API Key (Solo obligatoria si eligió Gemini)
+    if (process.env.PREFERRED_AI_PROVIDER === 'gemini' && isPlaceholderOrEmpty(process.env.GEMINI_API_KEY)) {
+      console.log("🔑 6b. Google Gemini API Key:");
       console.log("   Puedes obtener tu API Key en: https://aistudio.google.com/app/apikey");
       while (isPlaceholderOrEmpty(process.env.GEMINI_API_KEY)) {
         const gAns = await rl.question("👉 Gemini API Key: ");
@@ -161,8 +183,9 @@ async function runInteractiveOnboarding() {
       `JIRA_API_TOKEN="${process.env.JIRA_API_TOKEN}"`,
       `CONFLUENCE_USERNAME="${process.env.JIRA_USERNAME}"`,
       `CONFLUENCE_API_TOKEN="${process.env.JIRA_API_TOKEN}"`,
-      `GEMINI_API_KEY="${process.env.GEMINI_API_KEY}"`,
-      process.env.FIGMA_ACCESS_TOKEN ? `FIGMA_ACCESS_TOKEN="${process.env.FIGMA_ACCESS_TOKEN}"` : '',
+      `PREFERRED_AI_PROVIDER="${process.env.PREFERRED_AI_PROVIDER || 'gemini'}"`,
+      !isPlaceholderOrEmpty(process.env.GEMINI_API_KEY) ? `GEMINI_API_KEY="${process.env.GEMINI_API_KEY}"` : '',
+      !isPlaceholderOrEmpty(process.env.FIGMA_ACCESS_TOKEN) ? `FIGMA_ACCESS_TOKEN="${process.env.FIGMA_ACCESS_TOKEN}"` : '',
     ].filter(Boolean).join('\n') + '\n';
 
     fs.writeFileSync(CONFIG_FILE, envLines, { mode: 0o600 });
@@ -188,7 +211,9 @@ const CONFIG = {
 
 const rawArgs = process.argv.slice(2);
 const forceRefresh = rawArgs.includes('--refresh');
-const args = rawArgs.filter(a => a !== '--refresh');
+const aiFlag = rawArgs.find(a => a.startsWith('--ai='));
+const cliAiOverride = aiFlag ? aiFlag.split('=')[1].toLowerCase().trim() : '';
+const args = rawArgs.filter(a => a !== '--refresh' && !a.startsWith('--ai='));
 
 // ============================================================================
 // ADAPTADORES CLI SEGUROS
@@ -219,6 +244,51 @@ function isValidAiOutput(res) {
   if (!stdout || stdout.length < 20) return false;
   if (CONFIG.quotaRegex.test(stdout) || CONFIG.quotaRegex.test(stderr)) return false;
   return true;
+}
+
+function runAiInference(prompt, payload, options = {}) {
+  const provider = (cliAiOverride || process.env.PREFERRED_AI_PROVIDER || 'gemini').toLowerCase().trim();
+  const timeout = options.timeout || 60000;
+  const cwd = options.cwd || process.cwd();
+  const showStderr = options.showStderr || false;
+
+  if (provider === 'kiro' || provider === 'local') {
+    return { status: 1, stdout: '', skipped: true, reason: 'Modo Kiro / IDE Local seleccionado (Self-Bootstrap).' };
+  }
+
+  if (provider === 'copilot') {
+    console.log("  🐙 Usando GitHub Copilot CLI...");
+    let res = runCli('copilot', ['-p', `${prompt}\n\n${payload}`], { cwd, timeout });
+    if (isValidAiOutput(res)) return res;
+
+    if (!isPlaceholderOrEmpty(process.env.GEMINI_API_KEY)) {
+      console.log("  ⚠️  Copilot CLI no disponible o sin cuota. Intentando respaldo con Gemini...");
+      res = runCli('ask-gemini', [prompt], {
+        input: payload,
+        cwd,
+        stdio: showStderr ? ['pipe', 'pipe', 'inherit'] : undefined
+      });
+      if (isValidAiOutput(res)) return res;
+    }
+    return { status: 1, stdout: '', reason: 'GitHub Copilot CLI no respondió o no tiene sesión activa.' };
+  }
+
+  // Default: gemini -> copilot -> fallback
+  let res = { status: 1, stdout: '' };
+  if (!isPlaceholderOrEmpty(process.env.GEMINI_API_KEY)) {
+    res = runCli('ask-gemini', [prompt], {
+      input: payload,
+      cwd,
+      stdio: showStderr ? ['pipe', 'pipe', 'inherit'] : undefined
+    });
+    if (isValidAiOutput(res)) return res;
+  }
+
+  console.log("  ⚠️  Gemini no disponible. Activando respaldo secundario con GitHub Copilot CLI...");
+  res = runCli('copilot', ['-p', `${prompt}\n\n${payload}`], { cwd, timeout });
+  if (isValidAiOutput(res)) return res;
+
+  return { status: 1, stdout: '', reason: 'Proveedores externos (Gemini y Copilot) no respondieron o no tienen cuota disponible.' };
 }
 
 // ============================================================================
@@ -312,11 +382,8 @@ function getRepoArchitectureContext(repoPath, force) {
     const prompt = `Analiza este repositorio (${repoName}). En máximo 10 líneas, indica el framework, carpetas principales de código y patrones de arquitectura empleados. Sé breve y directo.`;
     const payload = `DEPENDENCIAS:\n${pkgSummary}\n\nESTRUCTURA DE ARCHIVOS:\n${repoTree}`;
 
-    // Cadena de resolución de arquitectura: Gemini -> Copilot -> Fallback estructurado
-    let aiRes = runCli('ask-gemini', [prompt], { input: payload, cwd: repoPath });
-    if (!isValidAiOutput(aiRes)) {
-      aiRes = runCli('copilot', ['-p', `${prompt}\n\n${payload}`], { cwd: repoPath, timeout: 30000 });
-    }
+    // Cadena de resolución según PREFERRED_AI_PROVIDER
+    const aiRes = runAiInference(prompt, payload, { cwd: repoPath, timeout: 30000 });
 
     if (isValidAiOutput(aiRes)) {
       summary = aiRes.stdout.trim();
@@ -608,27 +675,20 @@ ${figmaContext ? `\n<FIGMA_DESIGN>\n${figmaContext}\n</FIGMA_DESIGN>` : ''}`;
 
   let specContent = '';
   try {
-    // 1. Intento primario: Gemini CLI
-    let aiRes = runCli('ask-gemini', [systemPrompt], {
-      input: fullContextPayload,
-      stdio: ['pipe', 'pipe', 'inherit']
+    const aiRes = runAiInference(systemPrompt, fullContextPayload, {
+      timeout: 60000,
+      showStderr: true
     });
-
-    // 2. Intento secundario: GitHub Copilot CLI (si ask-gemini falló o agotó cuota)
-    if (!isValidAiOutput(aiRes)) {
-      console.log("  ⚠️  Gemini no disponible. Activando respaldo secundario con GitHub Copilot CLI...");
-      aiRes = runCli('copilot', ['-p', `${systemPrompt}\n\n${fullContextPayload}`], { timeout: 60000 });
-    }
 
     if (isValidAiOutput(aiRes)) {
       specContent = normalizeKiroTasksIndentation(aiRes.stdout.trim());
     } else {
-      throw new Error("Proveedores externos (Gemini y Copilot) no respondieron o no tienen cuota disponible.");
+      throw new Error(aiRes.reason || "Proveedores externos (Gemini y Copilot) no respondieron o no tienen cuota disponible.");
     }
   } catch (err) {
     // 3. SALVAVIDAS UNIVERSAL: Kiro Self-Bootstrap
-    console.log(`\n⚠️  [AI Fallback Activo] ${err.message}`);
-    console.log("🛡️  Activando modo 'Kiro Self-Bootstrap': Ensamblando artefacto SDD base directamente desde Jira...");
+    console.log(`\nℹ️  [Self-Bootstrap] ${err.message}`);
+    console.log("🛡️  Activando modo 'Kiro / IDE Local': Ensamblando artefacto SDD base directamente desde Jira...");
 
     // Extraer subtareas técnicas directamente de Jira
     const subtaskRegex = /###\s+\[Sub-task\]\s+([A-Z0-9]+-[0-9]+):\s+([^\n(]+)/gi;
