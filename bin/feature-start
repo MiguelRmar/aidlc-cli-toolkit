@@ -4,6 +4,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
+const https = require('node:https');
 const { spawnSync } = require('node:child_process');
 const readline = require('node:readline/promises');
 const { stdin: input, stdout: output } = require('node:process');
@@ -136,12 +137,15 @@ async function runInteractiveOnboarding() {
       console.log("🤖 6. Motor de IA para generar la especificación técnica (SDD):");
       console.log("   1) ✨ Google Gemini API (Requiere API Key gratuita o de pago)");
       console.log("   2) 🐙 GitHub Copilot CLI (Usa tu licencia de GitHub Copilot)");
-      console.log("   3) 🛡️  Kiro / IDE Local (Self-Bootstrap: sin APIs externas; tu IDE genera el plan)");
-      const aiAns = await rl.question("👉 Selecciona tu motor preferido [1/2/3, Enter = 1]: ");
+      console.log("   3) 🧠 Claude (Claude Code CLI con tu suscripción o Anthropic API Key)");
+      console.log("   4) 🛡️  Kiro / IDE Local (Self-Bootstrap: sin APIs externas; tu IDE genera el plan)");
+      const aiAns = await rl.question("👉 Selecciona tu motor preferido [1/2/3/4, Enter = 1]: ");
       const aiChoice = aiAns.trim().toLowerCase();
       if (aiChoice === '2' || aiChoice === 'copilot') {
         process.env.PREFERRED_AI_PROVIDER = 'copilot';
-      } else if (aiChoice === '3' || aiChoice === 'kiro' || aiChoice === 'local') {
+      } else if (aiChoice === '3' || aiChoice === 'claude' || aiChoice === 'anthropic') {
+        process.env.PREFERRED_AI_PROVIDER = 'claude';
+      } else if (aiChoice === '4' || aiChoice === 'kiro' || aiChoice === 'local') {
         process.env.PREFERRED_AI_PROVIDER = 'kiro';
       } else {
         process.env.PREFERRED_AI_PROVIDER = 'gemini';
@@ -158,6 +162,23 @@ async function runInteractiveOnboarding() {
         if (gAns.trim()) process.env.GEMINI_API_KEY = gAns.trim();
       }
       console.log("   ✔ API Key de Gemini registrada.\n");
+    }
+
+    // 6c. Claude (CLI con suscripción o Anthropic API Key opcional)
+    if (process.env.PREFERRED_AI_PROVIDER === 'claude' && isPlaceholderOrEmpty(process.env.ANTHROPIC_API_KEY)) {
+      const hasClaudeCli = runCli('claude', ['--version'], { timeout: 3000 }).status === 0;
+      if (hasClaudeCli) {
+        console.log("   ✔ Claude Code CLI detectado. Usará tu suscripción de Claude directamente.");
+      } else {
+        console.log("   ℹ️  No se detectó 'claude' CLI en tu PATH.");
+      }
+      const cAns = await rl.question("👉 Anthropic API Key (opcional si usas Claude Code CLI, Enter para omitir): ");
+      if (cAns.trim()) {
+        process.env.ANTHROPIC_API_KEY = cAns.trim();
+        console.log("   ✔ API Key de Anthropic registrada.\n");
+      } else {
+        console.log("   ✔ Se usará Claude Code CLI (o respaldo local).\n");
+      }
     }
 
     // 7. Figma Access Token (Opcional)
@@ -188,6 +209,7 @@ async function runInteractiveOnboarding() {
       `CONFLUENCE_API_TOKEN="${process.env.JIRA_API_TOKEN}"`,
       `PREFERRED_AI_PROVIDER="${process.env.PREFERRED_AI_PROVIDER || 'gemini'}"`,
       !isPlaceholderOrEmpty(process.env.GEMINI_API_KEY) ? `GEMINI_API_KEY="${process.env.GEMINI_API_KEY}"` : '',
+      !isPlaceholderOrEmpty(process.env.ANTHROPIC_API_KEY) ? `ANTHROPIC_API_KEY="${process.env.ANTHROPIC_API_KEY}"` : '',
       !isPlaceholderOrEmpty(process.env.FIGMA_ACCESS_TOKEN) ? `FIGMA_ACCESS_TOKEN="${process.env.FIGMA_ACCESS_TOKEN}"` : '',
     ].filter(Boolean).join('\n') + '\n';
 
@@ -258,7 +280,63 @@ function isValidAiOutput(res) {
   return true;
 }
 
-function runAiInference(prompt, payload, options = {}) {
+function callAnthropicApi(apiKey, systemPrompt, payload, timeoutMs = 60000) {
+  const models = process.env.ANTHROPIC_MODEL
+    ? [process.env.ANTHROPIC_MODEL]
+    : ['claude-sonnet-4-5', 'claude-sonnet-4-20250514', 'claude-3-7-sonnet-latest', 'claude-3-5-sonnet-latest'];
+
+  const tryModel = model => new Promise(resolve => {
+    const body = JSON.stringify({
+      model,
+      max_tokens: 8192,
+      temperature: 0.2,
+      system: systemPrompt,
+      messages: [{ role: 'user', content: payload || 'Genera el resultado solicitado.' }]
+    });
+
+    const req = https.request({
+      hostname: 'api.anthropic.com',
+      port: 443,
+      path: '/v1/messages',
+      method: 'POST',
+      headers: {
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+        'content-type': 'application/json',
+        'content-length': Buffer.byteLength(body)
+      },
+      timeout: timeoutMs
+    }, res => {
+      const chunks = [];
+      res.on('data', c => chunks.push(c));
+      res.on('end', () => {
+        const raw = Buffer.concat(chunks).toString('utf8');
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          try {
+            const parsed = JSON.parse(raw);
+            const text = (parsed.content || []).filter(p => p.type === 'text').map(p => p.text).join('\n').trim();
+            if (text) return resolve({ status: 0, stdout: text, stderr: '' });
+          } catch {}
+        }
+        resolve({ status: res.statusCode || 1, stdout: '', stderr: raw });
+      });
+    });
+    req.on('timeout', () => { req.destroy(); resolve({ status: 408, stdout: '', stderr: 'Timeout' }); });
+    req.on('error', e => resolve({ status: 500, stdout: '', stderr: e.message }));
+    req.write(body);
+    req.end();
+  });
+
+  return (async () => {
+    for (const m of models) {
+      const r = await tryModel(m);
+      if (r.status === 0 && r.stdout) return r;
+    }
+    return { status: 1, stdout: '', stderr: 'Anthropic API error' };
+  })();
+}
+
+async function runAiInference(prompt, payload, options = {}) {
   const provider = (cliAiOverride || process.env.PREFERRED_AI_PROVIDER || 'gemini').toLowerCase().trim();
   const timeout = options.timeout || 60000;
   const cwd = options.cwd || process.cwd();
@@ -266,6 +344,24 @@ function runAiInference(prompt, payload, options = {}) {
 
   if (provider === 'kiro' || provider === 'local') {
     return { status: 1, stdout: '', skipped: true, reason: 'Modo Kiro / IDE Local seleccionado (Self-Bootstrap).' };
+  }
+
+  if (provider === 'claude') {
+    console.log("  🧠 Usando Claude como motor principal...");
+    let res = runCli('claude', ['-p', prompt], { input: payload, cwd, timeout });
+    if (isValidAiOutput(res)) return res;
+
+    if (!isPlaceholderOrEmpty(process.env.ANTHROPIC_API_KEY)) {
+      console.log("  🧠 Consultando Anthropic API...");
+      res = await callAnthropicApi(process.env.ANTHROPIC_API_KEY, prompt, payload, timeout);
+      if (isValidAiOutput(res)) return res;
+    }
+
+    console.log("  ⚠️  Claude no disponible. Intentando respaldo con Copilot / Gemini...");
+    res = runCli('copilot', ['-p', `${prompt}\n\n${payload}`], { cwd, timeout });
+    if (isValidAiOutput(res)) return res;
+
+    return { status: 1, stdout: '', reason: 'Claude CLI / Anthropic API no respondió o no tiene sesión activa.' };
   }
 
   if (provider === 'copilot') {
@@ -336,7 +432,7 @@ function setupFeatureBranch(repoPath, branchName) {
 // ============================================================================
 // MEMORIA DE ARQUITECTURA EFICIENTE
 // ============================================================================
-function getRepoArchitectureContext(repoPath, force) {
+async function getRepoArchitectureContext(repoPath, force) {
   const repoName = path.basename(repoPath);
   const cacheDir = path.join(repoPath, '.kiro', 'cache');
   const cacheFile = path.join(cacheDir, 'repo-memory.json');
@@ -395,7 +491,7 @@ function getRepoArchitectureContext(repoPath, force) {
     const payload = `DEPENDENCIAS:\n${pkgSummary}\n\nESTRUCTURA DE ARCHIVOS:\n${repoTree}`;
 
     // Cadena de resolución según PREFERRED_AI_PROVIDER
-    const aiRes = runAiInference(prompt, payload, { cwd: repoPath, timeout: 30000 });
+    const aiRes = await runAiInference(prompt, payload, { cwd: repoPath, timeout: 30000 });
 
     if (isValidAiOutput(aiRes)) {
       summary = aiRes.stdout.trim();
@@ -791,7 +887,7 @@ async function main() {
   let reposContext = '';
   for (const repo of targetRepos) {
     setupFeatureBranch(repo, branchName);
-    reposContext += getRepoArchitectureContext(repo, forceRefresh);
+    reposContext += await getRepoArchitectureContext(repo, forceRefresh);
   }
 
   // Descargar recursos de Figma si existen
@@ -875,7 +971,7 @@ ${figmaContext ? `\n<FIGMA_DESIGN>\n${figmaContext}\n</FIGMA_DESIGN>` : ''}`;
 
   let specContent = '';
   try {
-    const aiRes = runAiInference(systemPrompt, fullContextPayload, {
+    const aiRes = await runAiInference(systemPrompt, fullContextPayload, {
       timeout: 60000,
       showStderr: true
     });

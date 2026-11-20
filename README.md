@@ -24,11 +24,13 @@ flowchart TD
         FS --> Selector{"PREFERRED_AI_PROVIDER"}
         Selector -->|"gemini"| Gemini["Google Gemini API"]
         Selector -->|"copilot"| Copilot["GitHub Copilot CLI"]
+        Selector -->|"claude"| Claude["Claude Code / Anthropic API"]
         Selector -->|"kiro / fallback"| KiroBoot["Self-Bootstrap Local"]
     end
 
     Gemini --> LeanSpec["SDD Spec: .kiro/specs/TICKET-spec.md"]
     Copilot --> LeanSpec
+    Claude --> LeanSpec
     KiroBoot --> LeanSpec
 
     subgraph Editores ["Apertura en Entorno de Desarrollo"]
@@ -62,6 +64,7 @@ Cada miembro del equipo puede usar el motor de IA para el que tenga licencia o p
 
 - **`gemini` (Google Gemini API):** Genera la especificación BDD rápidamente usando tu API Key de Google AI Studio. Si alcanza límite de cuota (`HTTP 429`), cae automáticamente a Copilot o Self-Bootstrap.
 - **`copilot` (GitHub Copilot CLI):** Utiliza tu licencia de Copilot directamente (`copilot -p`) sin requerir clave de Gemini.
+- **`claude` (Claude Code CLI / Anthropic API):** Usa tu suscripción de Claude Pro/Max/Team mediante `claude -p` o bien tu `ANTHROPIC_API_KEY`.
 - **`kiro` (Kiro / IDE Local - Self-Bootstrap):** No depende de APIs externas; ensambla de forma determinista el artefacto SDD con todos los datos crudos de Jira, Figma y estructura del repositorio para que tu agente local (en Antigravity, Kiro, Cursor o VS Code) complete el plan al abrir el proyecto.
 
 ---
@@ -190,7 +193,7 @@ feature-start PROJ-101
 O si deseas forzar la regeneración de contexto o elegir el motor de IA al vuelo:
 ```bash
 feature-start PROJ-101 --refresh
-feature-start PROJ-101 --ai=copilot   # Opciones: gemini, copilot, kiro
+feature-start PROJ-101 --ai=copilot   # Opciones: gemini, copilot, claude, kiro
 ```
 
 ---
