@@ -607,10 +607,14 @@ function getLocalGitRepos(projectsBaseDirs) {
   const dirs = Array.isArray(projectsBaseDirs) ? projectsBaseDirs : [projectsBaseDirs];
   const results = [];
   const seenPaths = new Set();
-  const IGNORED_DIRS = new Set(['node_modules', 'dist', 'build', 'target', 'coverage', 'vendor', '.git', '.kiro']);
+  const IGNORED_DIRS = new Set([
+    'node_modules', 'dist', 'build', 'target', 'coverage', 'vendor',
+    '.git', '.kiro', '.vscode', '.idea', 'src', 'test', 'tests', '__tests__',
+    'lib', 'assets', 'public', 'docs', 'bin', 'scripts', 'out', 'tmp'
+  ]);
 
   function scanDir(rootDir, currentDir, depth) {
-    if (depth > 3) return;
+    if (depth > 5) return;
     let entries = [];
     try {
       entries = fs.readdirSync(currentDir, { withFileTypes: true });
@@ -623,29 +627,23 @@ function getLocalGitRepos(projectsBaseDirs) {
       if (entry.name.startsWith('.') || IGNORED_DIRS.has(entry.name)) continue;
 
       const fullPath = path.join(currentDir, entry.name);
-      if (fs.existsSync(path.join(fullPath, '.git'))) {
-        if (!seenPaths.has(fullPath)) {
-          seenPaths.add(fullPath);
-          const rel = path.relative(rootDir, fullPath) || entry.name;
-          results.push({ name: entry.name, relativePath: rel, path: fullPath, source: 'local' });
-        }
-      } else {
-        scanDir(rootDir, fullPath, depth + 1);
+      if (fs.existsSync(path.join(fullPath, '.git')) && !seenPaths.has(fullPath)) {
+        seenPaths.add(fullPath);
+        const rel = path.relative(rootDir, fullPath) || entry.name;
+        results.push({ name: entry.name, relativePath: rel, path: fullPath, source: 'local' });
       }
+      // Seguir descendiendo hasta depth 5 por si una carpeta contenedora tiene un .git accidental
+      scanDir(rootDir, fullPath, depth + 1);
     }
   }
 
   for (const base of dirs) {
     if (!fs.existsSync(base)) continue;
-    // Si el directorio base en sí es un repo Git
-    if (fs.existsSync(path.join(base, '.git'))) {
-      if (!seenPaths.has(base)) {
-        seenPaths.add(base);
-        results.push({ name: path.basename(base), relativePath: path.basename(base), path: base, source: 'local' });
-      }
-    } else {
-      scanDir(base, base, 1);
+    if (fs.existsSync(path.join(base, '.git')) && !seenPaths.has(base)) {
+      seenPaths.add(base);
+      results.push({ name: path.basename(base), relativePath: path.basename(base), path: base, source: 'local' });
     }
+    scanDir(base, base, 1);
   }
 
   return results.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
