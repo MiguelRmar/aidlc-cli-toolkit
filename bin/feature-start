@@ -304,13 +304,24 @@ async function askQuestion(query) {
   }
 }
 
-function isValidAiOutput(res) {
+function isValidAiOutput(res, requireSpec = false) {
   if (!res || res.status !== 0) return false;
   const stdout = (res.stdout || '').trim();
   const stderr = (res.stderr || '').trim();
   if (!stdout || stdout.length < 20) return false;
   if (CONFIG.quotaRegex.test(stdout) || CONFIG.quotaRegex.test(stderr)) return false;
+  if (/Permission denied|Approval check|Retry in an interactive session|No pude generar la especificaci/i.test(stdout)) {
+    return false;
+  }
+  if (requireSpec && !/##\s+1\.\s*Requirements|##\s+3\.\s*Tasks/i.test(stdout)) {
+    return false;
+  }
   return true;
+}
+
+function runCopilotSilent(prompt, payload, { cwd, timeout = 60000 } = {}) {
+  const copilotPrompt = `INSTRUCCIÓN CRÍTICA: Toda la información necesaria ya está incluida abajo en este prompt. NO ejecutes comandos de shell, NO busques archivos ni uses herramientas interactivas. Responde únicamente con el resultado Markdown solicitado.\n\n${prompt}\n\n${payload}`;
+  return runCli('copilot', ['-s', '--no-ask-user', '-p', copilotPrompt], { cwd, timeout });
 }
 
 function callAnthropicApi(apiKey, systemPrompt, payload, timeoutMs = 60000) {
@@ -374,6 +385,7 @@ async function runAiInference(prompt, payload, options = {}) {
   const timeout = options.timeout || 60000;
   const cwd = options.cwd || process.cwd();
   const showStderr = options.showStderr || false;
+  const requireSpec = options.requireSpec || false;
 
   if (provider === 'kiro' || provider === 'local') {
     return { status: 1, stdout: '', skipped: true, reason: 'Modo Kiro / IDE Local seleccionado (Self-Bootstrap).' };
@@ -382,25 +394,25 @@ async function runAiInference(prompt, payload, options = {}) {
   if (provider === 'claude') {
     console.log("  🧠 Usando Claude como motor principal...");
     let res = runCli('claude', ['-p', prompt], { input: payload, cwd, timeout });
-    if (isValidAiOutput(res)) return res;
+    if (isValidAiOutput(res, requireSpec)) return res;
 
     if (!isPlaceholderOrEmpty(process.env.ANTHROPIC_API_KEY)) {
       console.log("  🧠 Consultando Anthropic API...");
       res = await callAnthropicApi(process.env.ANTHROPIC_API_KEY, prompt, payload, timeout);
-      if (isValidAiOutput(res)) return res;
+      if (isValidAiOutput(res, requireSpec)) return res;
     }
 
     console.log("  ⚠️  Claude no disponible. Intentando respaldo con Copilot / Gemini...");
-    res = runCli('copilot', ['-p', `${prompt}\n\n${payload}`], { cwd, timeout });
-    if (isValidAiOutput(res)) return res;
+    res = runCopilotSilent(prompt, payload, { cwd, timeout });
+    if (isValidAiOutput(res, requireSpec)) return res;
 
     return { status: 1, stdout: '', reason: 'Claude CLI / Anthropic API no respondió o no tiene sesión activa.' };
   }
 
   if (provider === 'copilot') {
     console.log("  🐙 Usando GitHub Copilot CLI...");
-    let res = runCli('copilot', ['-p', `${prompt}\n\n${payload}`], { cwd, timeout });
-    if (isValidAiOutput(res)) return res;
+    let res = runCopilotSilent(prompt, payload, { cwd, timeout });
+    if (isValidAiOutput(res, requireSpec)) return res;
 
     if (!isPlaceholderOrEmpty(process.env.GEMINI_API_KEY)) {
       console.log("  ⚠️  Copilot CLI no disponible o sin cuota. Intentando respaldo con Gemini...");
@@ -409,7 +421,7 @@ async function runAiInference(prompt, payload, options = {}) {
         cwd,
         stdio: showStderr ? ['pipe', 'pipe', 'inherit'] : undefined
       });
-      if (isValidAiOutput(res)) return res;
+      if (isValidAiOutput(res, requireSpec)) return res;
     }
     return { status: 1, stdout: '', reason: 'GitHub Copilot CLI no respondió o no tiene sesión activa.' };
   }
@@ -422,12 +434,12 @@ async function runAiInference(prompt, payload, options = {}) {
       cwd,
       stdio: showStderr ? ['pipe', 'pipe', 'inherit'] : undefined
     });
-    if (isValidAiOutput(res)) return res;
+    if (isValidAiOutput(res, requireSpec)) return res;
   }
 
   console.log("  ⚠️  Gemini no disponible. Activando respaldo secundario con GitHub Copilot CLI...");
-  res = runCli('copilot', ['-p', `${prompt}\n\n${payload}`], { cwd, timeout });
-  if (isValidAiOutput(res)) return res;
+  res = runCopilotSilent(prompt, payload, { cwd, timeout });
+  if (isValidAiOutput(res, requireSpec)) return res;
 
   return { status: 1, stdout: '', reason: 'Proveedores externos (Gemini y Copilot) no respondieron o no tienen cuota disponible.' };
 }
@@ -1026,7 +1038,9 @@ ${figmaContext ? `\n<FIGMA_DESIGN>\n${figmaContext}\n</FIGMA_DESIGN>` : ''}`;
   try {
     const aiRes = await runAiInference(systemPrompt, fullContextPayload, {
       timeout: 60000,
-      showStderr: true
+      cwd: mainRepoDir,
+      showStderr: true,
+      requireSpec: true
     });
 
     if (isValidAiOutput(aiRes)) {
