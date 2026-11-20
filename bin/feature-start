@@ -47,11 +47,12 @@ function isPlaceholderOrEmpty(val) {
   return placeholders.some(p => lower.includes(p));
 }
 
-async function runInteractiveOnboarding() {
+async function runInteractiveOnboarding(force = false) {
   const aiProvider = (process.env.PREFERRED_AI_PROVIDER || '').toLowerCase().trim();
   const needsGeminiKey = (!aiProvider || aiProvider === 'gemini') && isPlaceholderOrEmpty(process.env.GEMINI_API_KEY);
 
   const needsConfig =
+    force ||
     isPlaceholderOrEmpty(process.env.PROJECTS_BASE_DIR) ||
     isPlaceholderOrEmpty(process.env.JIRA_URL) ||
     isPlaceholderOrEmpty(process.env.CONFLUENCE_URL) ||
@@ -65,20 +66,26 @@ async function runInteractiveOnboarding() {
   console.log("\n=================================================================================");
   console.log("👋 ¡BIENVENIDO AL ENTORNO AI-DLC & SPEC-DRIVEN DEVELOPMENT (SDD)!");
   console.log("=================================================================================");
-  console.log("Hemos detectado que faltan configuraciones o es la primera vez que ejecutas 'feature-start'.");
-  console.log("Vamos a configurar tus accesos de forma guiada para que todo funcione sin fricción.\n");
+  if (force) {
+    console.log("Modo reconfiguración (--setup): Presiona [Enter] para mantener el valor actual o escribe uno nuevo.\n");
+  } else {
+    console.log("Hemos detectado que faltan configuraciones o es la primera vez que ejecutas 'feature-start'.");
+    console.log("Vamos a configurar tus accesos de forma guiada para que todo funcione sin fricción.\n");
+  }
 
   const rl = readline.createInterface({ input, output });
 
   try {
     // 1. Directorio(s) base de proyectos
-    if (isPlaceholderOrEmpty(process.env.PROJECTS_BASE_DIR)) {
-      const defaultProjects = path.join(os.homedir(), 'Documents', 'GitHub');
+    if (force || isPlaceholderOrEmpty(process.env.PROJECTS_BASE_DIR)) {
+      const currentProjects = !isPlaceholderOrEmpty(process.env.PROJECTS_BASE_DIR)
+        ? process.env.PROJECTS_BASE_DIR
+        : path.join(os.homedir(), 'Documents', 'GitHub');
       console.log("📁 1. Carpeta(s) donde guardas tus repositorios Git:");
       console.log(`   (Busca automáticamente en subcarpetas como backend/, frontend/, etc.)`);
-      console.log(`   (También puedes poner varias rutas separadas por coma. Sugerido: ${defaultProjects})`);
-      const dirAnswer = await rl.question(`👉 Ingresa la(s) ruta(s) [Enter = ${defaultProjects}]: `);
-      const rawPaths = (dirAnswer.trim() || defaultProjects)
+      console.log(`   (También puedes poner varias rutas separadas por coma)`);
+      const dirAnswer = await rl.question(`👉 Ingresa la(s) ruta(s) [Enter = ${currentProjects}]: `);
+      const rawPaths = (dirAnswer.trim() || currentProjects)
         .split(/[,;]+/)
         .map(p => p.trim())
         .filter(Boolean)
@@ -89,58 +96,74 @@ async function runInteractiveOnboarding() {
     }
 
     // 2. Jira Base URL
-    if (isPlaceholderOrEmpty(process.env.JIRA_URL)) {
+    if (force || isPlaceholderOrEmpty(process.env.JIRA_URL)) {
+      const currJira = !isPlaceholderOrEmpty(process.env.JIRA_URL) ? process.env.JIRA_URL : '';
       console.log("🌐 2. URL de tu instancia Jira (Atlassian):");
       console.log("   (Ejemplo: https://mi-organizacion.atlassian.net)");
-      while (isPlaceholderOrEmpty(process.env.JIRA_URL)) {
-        const jAns = await rl.question("👉 URL de Jira: ");
-        if (jAns.trim()) process.env.JIRA_URL = jAns.trim().replace(/\/+$/, '');
+      while (true) {
+        const jAns = await rl.question(currJira ? `👉 URL de Jira [Enter = ${currJira}]: ` : "👉 URL de Jira: ");
+        const val = (jAns.trim() || currJira).replace(/\/+$/, '');
+        if (!isPlaceholderOrEmpty(val)) {
+          process.env.JIRA_URL = val;
+          break;
+        }
       }
       console.log(`   ✔ Jira URL: ${process.env.JIRA_URL}\n`);
     }
 
     // 3. Confluence URL
-    if (isPlaceholderOrEmpty(process.env.CONFLUENCE_URL)) {
-      const defaultConfluence = `${process.env.JIRA_URL}/wiki`;
+    if (force || isPlaceholderOrEmpty(process.env.CONFLUENCE_URL)) {
+      const defaultConfluence = !isPlaceholderOrEmpty(process.env.CONFLUENCE_URL)
+        ? process.env.CONFLUENCE_URL
+        : `${process.env.JIRA_URL}/wiki`;
       console.log("📚 3. URL de Confluence (Atlassian Wiki):");
-      console.log(`   (Sugerido por defecto: ${defaultConfluence})`);
       const cAns = await rl.question(`👉 URL de Confluence [Enter = ${defaultConfluence}]: `);
       process.env.CONFLUENCE_URL = (cAns.trim() || defaultConfluence).replace(/\/+$/, '');
       console.log(`   ✔ Confluence URL: ${process.env.CONFLUENCE_URL}\n`);
     }
 
     // 4. Jira Username
-    if (isPlaceholderOrEmpty(process.env.JIRA_USERNAME)) {
+    if (force || isPlaceholderOrEmpty(process.env.JIRA_USERNAME)) {
+      const currUser = !isPlaceholderOrEmpty(process.env.JIRA_USERNAME) ? process.env.JIRA_USERNAME : '';
       console.log("📧 4. Correo de tu cuenta Atlassian (Jira / Confluence):");
       console.log("   (Ejemplo: nombre.apellido@empresa.com)");
-      while (isPlaceholderOrEmpty(process.env.JIRA_USERNAME)) {
-        const uAns = await rl.question("👉 Correo corporativo: ");
-        if (uAns.trim()) process.env.JIRA_USERNAME = uAns.trim();
+      while (true) {
+        const uAns = await rl.question(currUser ? `👉 Correo corporativo [Enter = ${currUser}]: ` : "👉 Correo corporativo: ");
+        const val = uAns.trim() || currUser;
+        if (!isPlaceholderOrEmpty(val)) {
+          process.env.JIRA_USERNAME = val;
+          break;
+        }
       }
       console.log(`   ✔ Usuario: ${process.env.JIRA_USERNAME}\n`);
     }
 
     // 5. Jira API Token
-    if (isPlaceholderOrEmpty(process.env.JIRA_API_TOKEN)) {
+    if (force || isPlaceholderOrEmpty(process.env.JIRA_API_TOKEN)) {
+      const currTok = !isPlaceholderOrEmpty(process.env.JIRA_API_TOKEN) ? process.env.JIRA_API_TOKEN : '';
       console.log("🔑 5. API Token de Atlassian:");
       console.log("   Puedes crearlo en: https://id.atlassian.com/manage-profile/security/api-tokens");
-      console.log("   (Crea un token con nombre 'aidlc-cli' y cópialo aquí)");
-      while (isPlaceholderOrEmpty(process.env.JIRA_API_TOKEN)) {
-        const tokAns = await rl.question("👉 Token de Jira: ");
-        if (tokAns.trim()) process.env.JIRA_API_TOKEN = tokAns.trim();
+      while (true) {
+        const tokAns = await rl.question(currTok ? "👉 Token de Jira [Enter = mantener actual]: " : "👉 Token de Jira: ");
+        const val = tokAns.trim() || currTok;
+        if (!isPlaceholderOrEmpty(val)) {
+          process.env.JIRA_API_TOKEN = val;
+          break;
+        }
       }
       console.log("   ✔ Token de Jira registrado.\n");
     }
 
     // 6. Motor de IA preferido para generar el plan SDD
-    if (!process.env.PREFERRED_AI_PROVIDER) {
+    if (force || !process.env.PREFERRED_AI_PROVIDER) {
+      const currAi = process.env.PREFERRED_AI_PROVIDER || 'gemini';
       console.log("🤖 6. Motor de IA para generar la especificación técnica (SDD):");
       console.log("   1) ✨ Google Gemini API (Requiere API Key gratuita o de pago)");
       console.log("   2) 🐙 GitHub Copilot CLI (Usa tu licencia de GitHub Copilot)");
       console.log("   3) 🧠 Claude (Claude Code CLI con tu suscripción o Anthropic API Key)");
       console.log("   4) 🛡️  Kiro / IDE Local (Self-Bootstrap: sin APIs externas; tu IDE genera el plan)");
-      const aiAns = await rl.question("👉 Selecciona tu motor preferido [1/2/3/4, Enter = 1]: ");
-      const aiChoice = aiAns.trim().toLowerCase();
+      const aiAns = await rl.question(`👉 Selecciona tu motor preferido [1/2/3/4, Enter = ${currAi}]: `);
+      const aiChoice = (aiAns.trim() || currAi).toLowerCase();
       if (aiChoice === '2' || aiChoice === 'copilot') {
         process.env.PREFERRED_AI_PROVIDER = 'copilot';
       } else if (aiChoice === '3' || aiChoice === 'claude' || aiChoice === 'anthropic') {
@@ -154,43 +177,51 @@ async function runInteractiveOnboarding() {
     }
 
     // 6b. Gemini API Key (Solo obligatoria si eligió Gemini)
-    if (process.env.PREFERRED_AI_PROVIDER === 'gemini' && isPlaceholderOrEmpty(process.env.GEMINI_API_KEY)) {
+    if (process.env.PREFERRED_AI_PROVIDER === 'gemini' && (force || isPlaceholderOrEmpty(process.env.GEMINI_API_KEY))) {
+      const currGem = !isPlaceholderOrEmpty(process.env.GEMINI_API_KEY) ? process.env.GEMINI_API_KEY : '';
       console.log("🔑 6b. Google Gemini API Key:");
       console.log("   Puedes obtener tu API Key en: https://aistudio.google.com/app/apikey");
-      while (isPlaceholderOrEmpty(process.env.GEMINI_API_KEY)) {
-        const gAns = await rl.question("👉 Gemini API Key: ");
-        if (gAns.trim()) process.env.GEMINI_API_KEY = gAns.trim();
+      while (true) {
+        const gAns = await rl.question(currGem ? "👉 Gemini API Key [Enter = mantener actual]: " : "👉 Gemini API Key: ");
+        const val = gAns.trim() || currGem;
+        if (!isPlaceholderOrEmpty(val)) {
+          process.env.GEMINI_API_KEY = val;
+          break;
+        }
       }
       console.log("   ✔ API Key de Gemini registrada.\n");
     }
 
     // 6c. Claude (CLI con suscripción o Anthropic API Key opcional)
-    if (process.env.PREFERRED_AI_PROVIDER === 'claude' && isPlaceholderOrEmpty(process.env.ANTHROPIC_API_KEY)) {
+    if (process.env.PREFERRED_AI_PROVIDER === 'claude' && (force || isPlaceholderOrEmpty(process.env.ANTHROPIC_API_KEY))) {
+      const currAnth = !isPlaceholderOrEmpty(process.env.ANTHROPIC_API_KEY) ? process.env.ANTHROPIC_API_KEY : '';
       const hasClaudeCli = runCli('claude', ['--version'], { timeout: 3000 }).status === 0;
       if (hasClaudeCli) {
         console.log("   ✔ Claude Code CLI detectado. Usará tu suscripción de Claude directamente.");
       } else {
-        console.log("   ℹ️  No se detectó 'claude' CLI en tu PATH.");
+        console.log("   ℹ️  No se detectó 'claude' CLI en tu PATH (puedes instalarlo con: npm i -g @anthropic-ai/claude-code).");
       }
-      const cAns = await rl.question("👉 Anthropic API Key (opcional si usas Claude Code CLI, Enter para omitir): ");
+      const cAns = await rl.question(currAnth ? "👉 Anthropic API Key [Enter = mantener actual]: " : "👉 Anthropic API Key (opcional si usas Claude Code CLI, Enter para omitir): ");
       if (cAns.trim()) {
         process.env.ANTHROPIC_API_KEY = cAns.trim();
         console.log("   ✔ API Key de Anthropic registrada.\n");
+      } else if (currAnth) {
+        console.log("   ✔ API Key de Anthropic mantenida.\n");
       } else {
         console.log("   ✔ Se usará Claude Code CLI (o respaldo local).\n");
       }
     }
 
     // 7. Figma Access Token (Opcional)
-    if (isPlaceholderOrEmpty(process.env.FIGMA_ACCESS_TOKEN)) {
+    if (force || isPlaceholderOrEmpty(process.env.FIGMA_ACCESS_TOKEN)) {
+      const currFig = !isPlaceholderOrEmpty(process.env.FIGMA_ACCESS_TOKEN) ? process.env.FIGMA_ACCESS_TOKEN : '';
       console.log("🎨 7. Figma Personal Access Token (Opcional):");
       console.log("   Si el ticket tiene mockups en Figma, descargará componentes automáticamente.");
-      console.log("   Generable en: Figma -> Configuración de cuenta -> Personal access tokens");
-      const fAns = await rl.question("👉 Token de Figma (o presiona Enter para omitir): ");
+      const fAns = await rl.question(currFig ? "👉 Token de Figma [Enter = mantener actual]: " : "👉 Token de Figma (o presiona Enter para omitir): ");
       if (fAns.trim()) {
         process.env.FIGMA_ACCESS_TOKEN = fAns.trim();
         console.log("   ✔ Token de Figma registrado.\n");
-      } else {
+      } else if (!currFig) {
         console.log("   ℹ️  Figma omitido temporalmente.\n");
       }
     }
@@ -199,7 +230,7 @@ async function runInteractiveOnboarding() {
     fs.mkdirSync(CONFIG_DIR, { recursive: true });
     const envLines = [
       `# Configuración automática AI-DLC & feature-start`,
-      `# Creado el ${new Date().toISOString()}`,
+      `# Actualizado el ${new Date().toISOString()}`,
       `PROJECTS_BASE_DIR="${process.env.PROJECTS_BASE_DIR}"`,
       `JIRA_URL="${process.env.JIRA_URL}"`,
       `CONFLUENCE_URL="${process.env.CONFLUENCE_URL}"`,
@@ -211,6 +242,7 @@ async function runInteractiveOnboarding() {
       !isPlaceholderOrEmpty(process.env.GEMINI_API_KEY) ? `GEMINI_API_KEY="${process.env.GEMINI_API_KEY}"` : '',
       !isPlaceholderOrEmpty(process.env.ANTHROPIC_API_KEY) ? `ANTHROPIC_API_KEY="${process.env.ANTHROPIC_API_KEY}"` : '',
       !isPlaceholderOrEmpty(process.env.FIGMA_ACCESS_TOKEN) ? `FIGMA_ACCESS_TOKEN="${process.env.FIGMA_ACCESS_TOKEN}"` : '',
+      process.env.PREFERRED_EDITOR ? `PREFERRED_EDITOR="${process.env.PREFERRED_EDITOR}"` : '',
     ].filter(Boolean).join('\n') + '\n';
 
     fs.writeFileSync(CONFIG_FILE, envLines, { mode: 0o600 });
@@ -245,9 +277,10 @@ const CONFIG = {
 
 const rawArgs = process.argv.slice(2);
 const forceRefresh = rawArgs.includes('--refresh');
+const forceSetup = rawArgs.includes('--setup') || rawArgs.includes('--config');
 const aiFlag = rawArgs.find(a => a.startsWith('--ai='));
 const cliAiOverride = aiFlag ? aiFlag.split('=')[1].toLowerCase().trim() : '';
-const args = rawArgs.filter(a => a !== '--refresh' && !a.startsWith('--ai='));
+const args = rawArgs.filter(a => a !== '--refresh' && a !== '--setup' && a !== '--config' && !a.startsWith('--ai='));
 
 // ============================================================================
 // ADAPTADORES CLI SEGUROS
@@ -822,8 +855,11 @@ async function findRepositoriesInteractively(projectsBaseDirs, currentGitRoot, h
 // FLUJO PRINCIPAL
 // ============================================================================
 async function main() {
-  // 0. Comprobación y Onboarding didáctico (primera ejecución)
-  await runInteractiveOnboarding();
+  // 0. Comprobación y Onboarding didáctico (primera ejecución o --setup)
+  await runInteractiveOnboarding(forceSetup);
+  if (forceSetup && args.length === 0) {
+    process.exit(0);
+  }
 
   let ticket = args[0];
   if (!ticket || ticket.startsWith('-')) {
@@ -1116,6 +1152,8 @@ function savePreferredEditor(editorKey) {
       : (prefEditor === 'vscode' || prefEditor === 'code') ? '3'
       : prefEditor === 'cursor' ? '4'
       : prefEditor === 'kiro-cli' || prefEditor === 'cli' ? '5'
+      : prefEditor === 'claude' || prefEditor === 'claude-cli' ? '6'
+      : prefEditor === 'copilot' || prefEditor === 'copilot-cli' ? '7'
       : '1';
 
     console.log("\n==========================================================");
@@ -1125,18 +1163,20 @@ function savePreferredEditor(editorKey) {
     console.log(`  3) 💻  Visual Studio Code (VS Code) ${defaultOption === '3' ? '[Predeterminado - Enter]' : ''}`);
     console.log(`  4) ⚡  Cursor ${defaultOption === '4' ? '[Predeterminado - Enter]' : ''}`);
     console.log(`  5) 📟  Kiro CLI (chat interactivo en terminal) ${defaultOption === '5' ? '[Predeterminado - Enter]' : ''}`);
-    console.log("  6) ✏️   Otro editor (escribe comando: webstorm, idea, zed, etc.)");
-    console.log("  7) 🚪  Ninguno (solo preparar ramas y especificación)");
+    console.log(`  6) 🧠  Claude Code CLI (chat interactivo en terminal) ${defaultOption === '6' ? '[Predeterminado - Enter]' : ''}`);
+    console.log(`  7) 🐙  GitHub Copilot CLI (chat interactivo en terminal) ${defaultOption === '7' ? '[Predeterminado - Enter]' : ''}`);
+    console.log("  8) ✏️   Otro editor (escribe comando: webstorm, idea, zed, etc.)");
+    console.log("  9) 🚪  Ninguno (solo preparar ramas y especificación)");
     console.log("==========================================================");
 
     const rl = readline.createInterface({ input, output });
     let choice = defaultOption;
     let customCmd = '';
     try {
-      const ans = await rl.question(`👉 Selecciona una opción [1-7, Enter = ${defaultOption}]: `);
+      const ans = await rl.question(`👉 Selecciona una opción [1-9, Enter = ${defaultOption}]: `);
       choice = ans.trim() || defaultOption;
 
-      if (choice === '6') {
+      if (choice === '8') {
         const cmdAns = await rl.question("👉 Ingresa el comando para abrir tu editor (ej: webstorm, idea, zed): ");
         customCmd = cmdAns.trim();
       }
@@ -1146,6 +1186,7 @@ function savePreferredEditor(editorKey) {
 
     let openedKey = '';
     const norm = choice.toLowerCase();
+    const promptInput = `Iniciando ${ticket}: ${taskTitle}. Revisa la especificación en ${mainSpecPath} y comencemos con la primera Unidad de Trabajo (UoW 1).`;
 
     if (norm === '1' || norm === 'kiro') {
       console.log("\n🚀 Abriendo repositorios y especificación en Kiro IDE...");
@@ -1192,10 +1233,23 @@ function savePreferredEditor(editorKey) {
       openedKey = 'cursor';
     } else if (norm === '5' || norm === 'cli' || norm === 'kiro-cli') {
       console.log("\n💻 Iniciando Kiro CLI en la terminal...");
-      const promptInput = `Iniciando ${ticket}: ${taskTitle}. Revisa la especificación en ${mainSpecPath} y comencemos con la primera Unidad de Trabajo (UoW 1).`;
       runCli('kiro-cli', ['chat', promptInput], { cwd: mainRepoDir, stdio: 'inherit' });
       openedKey = 'kiro-cli';
-    } else if (norm === '6' && customCmd) {
+    } else if (norm === '6' || norm === 'claude' || norm === 'claude-cli') {
+      console.log("\n🧠 Iniciando Claude Code CLI en la terminal...");
+      const claudeRes = runCli('claude', [promptInput], { cwd: mainRepoDir, stdio: 'inherit' });
+      if (claudeRes.status !== 0) {
+        console.log("⚠️ No se pudo ejecutar 'claude'. Instálalo con: npm install -g @anthropic-ai/claude-code");
+      }
+      openedKey = 'claude';
+    } else if (norm === '7' || norm === 'copilot' || norm === 'copilot-cli') {
+      console.log("\n🐙 Iniciando GitHub Copilot CLI en la terminal...");
+      const copRes = runCli('copilot', ['-i', promptInput], { cwd: mainRepoDir, stdio: 'inherit' });
+      if (copRes.status !== 0) {
+        runCli('copilot', { cwd: mainRepoDir, stdio: 'inherit' });
+      }
+      openedKey = 'copilot';
+    } else if (norm === '8' && customCmd) {
       console.log(`\n🚀 Abriendo con comando personalizado '${customCmd}'...`);
       runCli(customCmd, [...targetRepos, mainSpecPath], { stdio: 'inherit' });
       openedKey = customCmd;
@@ -1204,7 +1258,7 @@ function savePreferredEditor(editorKey) {
     }
 
     // Si aún no tenía preferencia guardada, preguntar si desea recordarla
-    if (!process.env.PREFERRED_EDITOR && openedKey && openedKey !== 'none' && openedKey !== '7') {
+    if (!process.env.PREFERRED_EDITOR && openedKey && openedKey !== 'none' && openedKey !== '9') {
       const rlPref = readline.createInterface({ input, output });
       try {
         const prefAns = await rlPref.question(`👉 ¿Deseas recordar '${openedKey}' como tu editor predeterminado? [s/N]: `);

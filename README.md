@@ -78,8 +78,10 @@ Sin importar qué IDE utilice cada persona del equipo, todos trabajan sobre el m
 3. **💻 Visual Studio Code (VS Code):** Abre el proyecto con `code` o la aplicación de escritorio.
 4. **⚡ Cursor:** Abre el proyecto en Cursor.
 5. **📟 Kiro CLI:** Inicia una sesión interactiva en la terminal.
-6. **✏️ Otro editor:** Permite ingresar cualquier comando personalizado (`webstorm`, `idea`, `zed`, etc.).
-7. **🚪 Ninguno:** Prepara ramas y archivos sin abrir ningún editor.
+6. **🧠 Claude Code CLI:** Inicia una sesión interactiva con `claude` en el proyecto.
+7. **🐙 GitHub Copilot CLI:** Inicia una sesión interactiva con `copilot` en el proyecto.
+8. **✏️ Otro editor:** Permite ingresar cualquier comando personalizado (`webstorm`, `idea`, `zed`, etc.).
+9. **🚪 Ninguno:** Prepara ramas y archivos sin abrir ningún editor.
 
 > La primera vez que elijas un editor, `feature-start` te preguntará si deseas guardarlo como predeterminado (`PREFERRED_EDITOR`) para que en futuras ejecuciones solo presiones `Enter`.
 
@@ -190,8 +192,9 @@ Para comenzar a trabajar en cualquier requerimiento:
 feature-start PROJ-101
 ```
 
-O si deseas forzar la regeneración de contexto o elegir el motor de IA al vuelo:
+O si deseas reconfigurar tus accesos, forzar la regeneración de contexto o elegir el motor de IA al vuelo:
 ```bash
+feature-start --setup                  # Re-ejecutar asistente de configuración (mantiene valores actuales con Enter)
 feature-start PROJ-101 --refresh
 feature-start PROJ-101 --ai=copilot   # Opciones: gemini, copilot, claude, kiro
 ```
