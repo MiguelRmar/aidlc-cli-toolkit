@@ -310,7 +310,7 @@ function isValidAiOutput(res, requireSpec = false) {
   const stderr = (res.stderr || '').trim();
   if (!stdout || stdout.length < 20) return false;
   if (CONFIG.quotaRegex.test(stdout) || CONFIG.quotaRegex.test(stderr)) return false;
-  if (/Permission denied|Approval check|Retry in an interactive session|No pude generar la especificaci/i.test(stdout)) {
+  if (/Permission denied|Approval check|Retry in an interactive session|No pude generar la especificaci|PENDIENTE-JIRA|el prompt no incluye/i.test(stdout)) {
     return false;
   }
   if (requireSpec && !/##\s+1\.\s*Requirements|##\s+3\.\s*Tasks/i.test(stdout)) {

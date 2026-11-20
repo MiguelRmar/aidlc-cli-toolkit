@@ -20,13 +20,15 @@ const MODELS = process.env.GEMINI_MODEL ? [process.env.GEMINI_MODEL, ...DEFAULT_
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-function readStdinSyncSafe() {
-  if (process.stdin.isTTY) return '';
-  try {
-    return fs.readFileSync(0, 'utf8');
-  } catch (e) {
-    return '';
-  }
+function readStdinAsync() {
+  if (process.stdin.isTTY) return Promise.resolve('');
+  return new Promise(resolve => {
+    const chunks = [];
+    process.stdin.setEncoding('utf8');
+    process.stdin.on('data', chunk => chunks.push(chunk));
+    process.stdin.on('end', () => resolve(chunks.join('')));
+    process.stdin.on('error', () => resolve(chunks.join('')));
+  });
 }
 
 function callGemini(model, promptText, timeoutMs = 25000) {
@@ -133,7 +135,7 @@ function isSpecComplete(text, isSpecRequest, finishReason = 'STOP') {
 
 async function main() {
   const args = process.argv.slice(2);
-  const stdinContent = readStdinSyncSafe();
+  const stdinContent = await readStdinAsync();
   
   let fullPrompt = '';
   if (args.length > 0) {
