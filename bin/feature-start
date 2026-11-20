@@ -784,12 +784,31 @@ async function findRepositoriesInteractively(projectsBaseDirs, currentGitRoot, h
           if (!accumulatedPaths.includes(item.path)) accumulatedPaths.push(item.path);
         } else {
           const destPath = path.join(cloneTargetBase, item.name);
-          console.log(`\n==> 📥 Clonando ${item.fullName} en ${destPath}...`);
-          const cloneRes = runCli('gh', ['repo', 'clone', item.fullName, destPath], { stdio: 'inherit' });
-          if (cloneRes.status === 0 && fs.existsSync(destPath)) {
-            if (!accumulatedPaths.includes(destPath)) accumulatedPaths.push(destPath);
+          console.log(`\n☁️  Seleccionaste el repositorio remoto '${item.fullName}'.`);
+          const cloneAns = (await rl.question(
+            `👉 ¿Deseas clonarlo en '${destPath}'? [s = Clonar / n = Cancelar / o pega ruta local]: `
+          )).trim();
+
+          const ansLower = cloneAns.toLowerCase();
+          if (['s', 'si', 'y', 'yes'].includes(ansLower)) {
+            console.log(`\n==> 📥 Clonando ${item.fullName} en ${destPath}...`);
+            const cloneRes = runCli('gh', ['repo', 'clone', item.fullName, destPath], { stdio: 'inherit' });
+            if (cloneRes.status === 0 && fs.existsSync(destPath)) {
+              if (!accumulatedPaths.includes(destPath)) accumulatedPaths.push(destPath);
+            } else {
+              console.error(`  ❌ No se pudo clonar ${item.fullName}.`);
+            }
+          } else if (cloneAns && !['n', 'no'].includes(ansLower)) {
+            const expanded = cloneAns.startsWith('~/') ? path.join(os.homedir(), cloneAns.slice(2)) : cloneAns;
+            const resolvedCustom = path.resolve(expanded);
+            if (fs.existsSync(path.join(resolvedCustom, '.git'))) {
+              console.log(`  ✔ Usando repositorio local indicado: ${resolvedCustom}`);
+              if (!accumulatedPaths.includes(resolvedCustom)) accumulatedPaths.push(resolvedCustom);
+            } else {
+              console.log(`  ⚠️  La ruta '${resolvedCustom}' no existe o no es un repositorio Git. Se omitió.`);
+            }
           } else {
-            console.error(`  ❌ No se pudo clonar ${item.fullName}.`);
+            console.log(`  ℹ️  Clonación de '${item.fullName}' cancelada.`);
           }
         }
       }
