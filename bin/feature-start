@@ -1038,7 +1038,7 @@ ${figmaContext ? `\n<FIGMA_DESIGN>\n${figmaContext}\n</FIGMA_DESIGN>` : ''}`;
   try {
     const aiRes = await runAiInference(systemPrompt, fullContextPayload, {
       timeout: 60000,
-      cwd: mainRepoDir,
+      cwd: targetRepos[0],
       showStderr: true,
       requireSpec: true
     });
